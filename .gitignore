@@ -1,0 +1,4 @@
+.worktrees/
+.superpowers/
+target/
+vendor/

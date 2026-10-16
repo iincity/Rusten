@@ -1,0 +1,40 @@
+id = "edge_cache"
+name = "Microsoft Edge cache"
+category = "browser_cache"
+group = "浏览器专清"
+group_order = 20
+display_name = "Edge浏览器"
+display_order = 10
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = ["msedge.exe"]
+requires_admin = false
+warning = "Edge can rebuild this cache after cleanup"
+version = "1"
+
+[[display_items]]
+key = "browser.edge"
+name = "Edge浏览器"
+order = 10
+paths = ["C:/Users/*/AppData/Local/Microsoft/Edge/User Data/*/Cache/*"]
+
+[[display_items]]
+key = "browser.ie"
+name = "IE控件缓存"
+order = 20
+
+[match]
+paths = ["C:/Users/*/AppData/Local/Microsoft/Edge/User Data/*/Cache/*"]
+
+[exclude]
+paths = [
+  "*/Login Data*",
+  "*/Cookies*",
+  "*/Web Data*",
+  "*/Bookmarks*",
+  "*/Extensions*",
+  "*/Local State*",
+  "*/Session Storage*",
+]

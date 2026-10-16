@@ -1,0 +1,40 @@
+id = "system_logs"
+name = "Windows error reports and rebuildable logs"
+category = "system_logs"
+group = "系统专清"
+group_order = 10
+display_name = "日志文件"
+display_order = 30
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = []
+requires_admin = false
+warning = "Windows Error Reporting logs can be recreated after cleanup"
+version = "1"
+
+[[display_items]]
+key = "system.logs"
+name = "日志文件"
+order = 30
+paths = [
+  "C:/ProgramData/Microsoft/Windows/WER/ReportArchive/*",
+  "C:/ProgramData/Microsoft/Windows/WER/ReportQueue/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WER/ReportArchive/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WER/ReportQueue/*",
+  "C:/Windows/Logs/*",
+  "C:/Windows/System32/LogFiles/*",
+  "C:/Windows/Panther/*",
+]
+
+[match]
+paths = [
+  "C:/ProgramData/Microsoft/Windows/WER/ReportArchive/*",
+  "C:/ProgramData/Microsoft/Windows/WER/ReportQueue/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WER/ReportArchive/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WER/ReportQueue/*",
+  "C:/Windows/Logs/*",
+  "C:/Windows/System32/LogFiles/*",
+  "C:/Windows/Panther/*",
+]

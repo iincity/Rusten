@@ -1,0 +1,15 @@
+[package]
+name = "cleaner-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audit.workspace = true
+application.workspace = true
+domain.workspace = true
+platform-windows.workspace = true
+persistence.workspace = true
+policy.workspace = true
+serde_json.workspace = true
+toml.workspace = true

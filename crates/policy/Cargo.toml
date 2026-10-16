@@ -1,0 +1,17 @@
+[package]
+name = "policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+
+[[test]]
+name = "policy_precedence_tests"
+path = "../../tests/domain/policy_precedence_tests.rs"

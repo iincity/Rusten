@@ -1,0 +1,35 @@
+id = "chrome_cache"
+name = "Google Chrome cache"
+category = "browser_cache"
+group = "浏览器专清"
+group_order = 20
+display_name = "谷歌浏览器"
+display_order = 30
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = ["chrome.exe"]
+requires_admin = false
+warning = "Chrome can rebuild this cache after cleanup"
+version = "1"
+
+[[display_items]]
+key = "browser.chrome"
+name = "谷歌浏览器"
+order = 30
+paths = ["C:/Users/*/AppData/Local/Google/Chrome/User Data/*/Cache/*"]
+
+[match]
+paths = ["C:/Users/*/AppData/Local/Google/Chrome/User Data/*/Cache/*"]
+
+[exclude]
+paths = [
+  "*/Login Data*",
+  "*/Cookies*",
+  "*/Web Data*",
+  "*/Bookmarks*",
+  "*/Extensions*",
+  "*/Local State*",
+  "*/Session Storage*",
+]

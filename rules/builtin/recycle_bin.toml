@@ -1,0 +1,19 @@
+id = "recycle_bin"
+name = "Recycle Bin metadata"
+category = "recycle_bin"
+group = "系统专清"
+group_order = 10
+display_name = "回收站"
+display_order = 120
+mode = "manual"
+risk = "P2"
+confidence = "high"
+recovery = "recycle"
+processes = []
+requires_admin = false
+warning = "Use the Windows Shell recycle-bin operation; never scan or delete its internal paths"
+version = "1"
+operation = "shell_recycle_bin_metadata"
+
+[match]
+paths = []

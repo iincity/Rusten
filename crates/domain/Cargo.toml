@@ -1,0 +1,33 @@
+[package]
+name = "domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[[test]]
+name = "path_policy_tests"
+path = "../../tests/domain/path_policy_tests.rs"
+
+[[test]]
+name = "scan_index_tests"
+path = "../../tests/domain/scan_index_tests.rs"
+
+[[test]]
+name = "rule_matching_tests"
+path = "../../tests/domain/rule_matching_tests.rs"
+
+[[test]]
+name = "risk_policy_tests"
+path = "../../tests/domain/risk_policy_tests.rs"
+
+[[test]]
+name = "duplicate_tests"
+path = "../../tests/domain/duplicate_tests.rs"

@@ -1,0 +1,33 @@
+[package]
+name = "persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+application.workspace = true
+domain.workspace = true
+serde_json.workspace = true
+rusqlite = { version = "0.18.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "config_store_tests"
+path = "../../tests/persistence/config_store_tests.rs"
+
+[[test]]
+name = "recycle_restore_tests"
+path = "../../tests/windows/recycle_restore_tests.rs"
+
+[[test]]
+name = "operation_db_tests"
+path = "../../tests/persistence/operation_db_tests.rs"
+
+[[test]]
+name = "backup_catalog_tests"
+path = "../../tests/persistence/backup_catalog_tests.rs"

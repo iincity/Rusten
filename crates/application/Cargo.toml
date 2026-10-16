@@ -1,0 +1,23 @@
+[package]
+name = "application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[[test]]
+name = "application_flow_tests"
+path = "../../tests/domain/application_flow_tests.rs"
+
+[[test]]
+name = "cleanup_plan_tests"
+path = "../../tests/domain/cleanup_plan_tests.rs"
+
+[[test]]
+name = "report_tests"
+path = "../../tests/domain/report_tests.rs"

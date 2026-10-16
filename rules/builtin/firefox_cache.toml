@@ -1,0 +1,33 @@
+id = "firefox_cache"
+name = "Mozilla Firefox cache"
+category = "browser_cache"
+group = "浏览器专清"
+group_order = 20
+display_name = "火狐浏览器"
+display_order = 40
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = ["firefox.exe"]
+requires_admin = false
+warning = "Firefox can rebuild this cache after cleanup"
+version = "1"
+
+[[display_items]]
+key = "browser.firefox"
+name = "火狐浏览器"
+order = 40
+paths = ["C:/Users/*/AppData/Local/Mozilla/Firefox/Profiles/*/cache2/*"]
+
+[match]
+paths = ["C:/Users/*/AppData/Local/Mozilla/Firefox/Profiles/*/cache2/*"]
+
+[exclude]
+paths = [
+  "*/logins.json*",
+  "*/key4.db*",
+  "*/cookies.sqlite*",
+  "*/places.sqlite*",
+  "*/sessionstore*",
+]

@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "apps/cleaner-ui",
+    "apps/admin-helper",
+    "crates/domain",
+    "crates/application",
+    "crates/platform-windows",
+    "crates/persistence",
+    "crates/policy",
+    "crates/audit",
+    "crates/remote-management",
+    "crates/telemetry",
+    "crates/updater",
+    "apps/cleaner-cli",
+]
+default-members = ["apps/cleaner-ui", "apps/admin-helper"]
+exclude = ["vendor/UltraFastFileSearch"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+application = { path = "crates/application" }
+domain = { path = "crates/domain" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+ed25519-dalek = "2.2.0"
+ring = "0.17.14"
+toml = "0.8.23"
+gpui = "0.2.2"
+gpui-component = "0.3.0"
+platform-windows = { path = "crates/platform-windows" }
+persistence = { path = "crates/persistence" }
+policy = { path = "crates/policy" }
+audit = { path = "crates/audit" }

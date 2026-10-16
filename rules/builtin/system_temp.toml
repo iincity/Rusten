@@ -1,0 +1,185 @@
+id = "system_temp"
+name = "System and user temporary files"
+category = "system_temp"
+group = "系统专清"
+group_order = 10
+display_name = "临时文件"
+display_order = 10
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = []
+requires_admin = false
+warning = "Temporary files are normally recreated when needed"
+version = "1"
+
+[[display_items]]
+key = "system.temp"
+name = "临时文件"
+order = 10
+paths = ["C:/Windows/Temp/*", "C:/Users/*/AppData/Local/Temp/*"]
+
+[[display_items]]
+key = "system.cache"
+name = "缓存文件"
+order = 20
+paths = [
+  "C:/Windows/SoftwareDistribution/Download/*",
+  "C:/Windows/SoftwareDistribution/DataStore/*",
+  "C:/ProgramData/Microsoft/Windows/DeliveryOptimization/Cache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/INetCache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/Explorer/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WebCache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/Caches/*",
+]
+
+[[display_items]]
+key = "system.debug"
+name = "调试文件"
+order = 40
+paths = [
+  "C:/Windows/Minidump/*",
+  "C:/Windows/LiveKernelReports/*",
+  "C:/Windows/MEMORY.DMP",
+  "C:/Users/*/AppData/Local/CrashDumps/*",
+]
+
+[[display_items]]
+key = "system.unused_resources"
+name = "不常用资源"
+order = 50
+paths = [
+  "C:/Windows/Downloaded Program Files/*",
+  "C:/Windows/Offline Web Pages/*",
+]
+
+[[display_items]]
+key = "system.microsoft_apps"
+name = "微软应用程序"
+order = 60
+paths = [
+  "C:/ProgramData/Microsoft/Windows/AppRepository/*",
+]
+
+[[display_items]]
+key = "system.history"
+name = "历史访问记录"
+order = 70
+paths = [
+  "C:/Users/*/AppData/Roaming/Microsoft/Windows/Recent/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/History/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/INetHistory/*",
+]
+
+[[display_items]]
+key = "system.input_methods"
+name = "不常用输入法"
+order = 80
+paths = [
+  "C:/Windows/System32/IME/*",
+  "C:/Windows/IME/*",
+  "C:/Windows/System32/InputMethod/*",
+]
+
+[[display_items]]
+key = "system.legacy_cache"
+name = "旧版系统缓存"
+order = 90
+paths = [
+  "C:/Windows/Prefetch/*",
+]
+
+[[display_items]]
+key = "system.installers"
+name = "安装包残留"
+order = 100
+paths = [
+  "C:/Windows/Downloaded Installations/*",
+  "C:/Users/*/AppData/Local/Downloaded Installations/*",
+]
+
+[[display_items]]
+key = "system.store"
+name = "应用商店"
+order = 110
+paths = [
+  "C:/Users/*/AppData/Local/Packages/*/LocalCache/*",
+  "C:/Users/*/AppData/Local/Packages/*/AC/*/INetCache/*",
+]
+
+[[display_items]]
+key = "system.virtual_memory"
+name = "虚拟内存"
+order = 130
+paths = ["C:/pagefile.sys", "C:/swapfile.sys"]
+
+[[display_items]]
+key = "system.restore_points"
+name = "系统备份还原"
+order = 140
+
+[[display_items]]
+key = "system.driver_installers"
+name = "驱动安装残留"
+order = 150
+paths = [
+  "C:/Windows/System32/DriverStore/Temp/*",
+  "C:/Windows/System32/DriverStore/Log/*",
+  "C:/Windows/INF/*.bak",
+  "C:/Windows/INF/*_old",
+]
+
+[[display_items]]
+key = "system.winsxs"
+name = "WinSxS补丁"
+order = 160
+paths = [
+  "C:/Windows/WinSxS/Temp/*",
+  "C:/Windows/WinSxS/ManifestCache/*",
+  "C:/Windows/WinSxS/Backup/*",
+]
+
+[[display_items]]
+key = "system.hibernate"
+name = "休眠文件"
+order = 170
+paths = ["C:/hiberfil.sys"]
+
+[[display_items]]
+key = "system.msi"
+name = "MSI缓存残留"
+order = 180
+paths = [
+  "C:/Windows/Installer/*.tmp",
+  "C:/Windows/Installer/*PatchCache*",
+  "C:/Windows/Installer/$PatchCache$/*",
+]
+
+[[display_items]]
+key = "system.lcu"
+name = "LCU缓存"
+order = 190
+paths = ["C:/Windows/Servicing/LCU/*"]
+
+[match]
+paths = [
+  "C:/Windows/Temp/*",
+  "C:/Users/*/AppData/Local/Temp/*",
+  "C:/Windows/SoftwareDistribution/Download/*",
+  "C:/ProgramData/Microsoft/Windows/DeliveryOptimization/Cache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/INetCache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/Explorer/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/WebCache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/Caches/*",
+  "C:/Windows/Minidump/*",
+  "C:/Windows/LiveKernelReports/*",
+  "C:/Users/*/AppData/Local/CrashDumps/*",
+  "C:/Windows/MEMORY.DMP",
+  "C:/Users/*/AppData/Roaming/Microsoft/Windows/Recent/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/History/*",
+  "C:/Users/*/AppData/Local/Microsoft/Windows/INetHistory/*",
+  "C:/Windows/Prefetch/*.pf",
+  "C:/Users/*/AppData/Local/Packages/*/LocalCache/*",
+  "C:/Users/*/AppData/Local/Packages/*/AC/*/INetCache/*",
+]

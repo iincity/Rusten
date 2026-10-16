@@ -1,0 +1,19 @@
+[package]
+name = "updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[test]]
+name = "signature_tests"
+path = "../../tests/updater/signature_tests.rs"

@@ -1,0 +1,25 @@
+[package]
+name = "admin-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+application.workspace = true
+domain.workspace = true
+persistence = { path = "../../crates/persistence" }
+platform-windows.workspace = true
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[[test]]
+name = "admin_ipc_tests"
+path = "../../tests/windows/admin_ipc_tests.rs"

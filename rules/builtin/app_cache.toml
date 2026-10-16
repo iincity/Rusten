@@ -1,0 +1,134 @@
+id = "app_cache"
+name = "Rebuildable application caches"
+category = "app_cache"
+group = "常用软件专清"
+group_order = 30
+display_name = "应用缓存"
+display_order = 10
+item_from_path_after = "AppData/Local"
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "backup_then_delete"
+processes = []
+requires_admin = false
+warning = "Application cache data can be rebuilt; sensitive databases are excluded"
+version = "1"
+
+[[display_items]]
+key = "app.vlc"
+name = "VLC播放器"
+order = 10
+paths = ["C:/Users/*/AppData/Local/VLC/Cache/*"]
+
+[[display_items]]
+key = "app.wecom"
+name = "企业微信"
+order = 20
+paths = ["C:/Users/*/AppData/Local/Tencent/WeCom/Cache/*"]
+
+[[display_items]]
+key = "app.qq"
+name = "QQ"
+order = 30
+paths = ["C:/Users/*/AppData/Local/Tencent/QQ/Cache/*"]
+
+[[display_items]]
+key = "app.thunder"
+name = "迅雷"
+order = 40
+paths = ["C:/Users/*/AppData/Local/Thunder Network/Thunder/Cache/*"]
+
+[[display_items]]
+key = "app.filezilla"
+name = "FileZilla"
+order = 50
+paths = ["C:/Users/*/AppData/Local/FileZilla/Cache/*"]
+
+[[display_items]]
+key = "app.vmware"
+name = "VMware"
+order = 60
+paths = ["C:/Users/*/AppData/Local/VMware/Cache/*"]
+
+[[display_items]]
+key = "app.dotnet"
+name = ".Net框架"
+order = 70
+
+[[display_items]]
+key = "app.dingtalk"
+name = "钉钉"
+order = 80
+paths = ["C:/Users/*/AppData/Local/DingTalk/Cache/*"]
+
+[[display_items]]
+key = "app.tencent_meeting"
+name = "腾讯会议"
+order = 90
+paths = ["C:/Users/*/AppData/Local/Tencent/Meeting/Cache/*"]
+
+[[display_items]]
+key = "app.adobe_reader"
+name = "Adobe Reader"
+order = 100
+paths = ["C:/Users/*/AppData/Local/Adobe/Acrobat/Cache/*"]
+
+[[display_items]]
+key = "app.office"
+name = "Micro Office"
+order = 110
+paths = ["C:/Users/*/AppData/Local/Microsoft/Office/Cache/*"]
+
+[[display_items]]
+key = "app.java"
+name = "Java应用"
+order = 120
+paths = ["C:/Users/*/AppData/Local/Sun/Java/Deployment/cache/*"]
+
+[[display_items]]
+key = "app.baidu_netdisk"
+name = "百度网盘"
+order = 130
+paths = ["C:/Users/*/AppData/Local/BaiduNetdisk/Cache/*"]
+
+[[display_items]]
+key = "app.sunlogin"
+name = "向日葵客户端"
+order = 140
+paths = ["C:/Users/*/AppData/Local/Oray/Sunlogin/Cache/*"]
+
+[[display_items]]
+key = "app.hisuite"
+name = "华为手机助手"
+order = 150
+paths = ["C:/Users/*/AppData/Local/HiSuite/Cache/*"]
+
+[[display_items]]
+key = "app.hr"
+name = "人事应用"
+order = 160
+
+[match]
+paths = ["C:/Users/*/AppData/Local/*/Cache/*"]
+
+[exclude]
+paths = [
+  "*/Login Data*",
+  "*/Cookies*",
+  "*/Web Data*",
+  "*/History*",
+  "*/Bookmarks*",
+  "*/Local State*",
+  "*/Session Storage*",
+  "*/Mail*",
+  "*/Messages*",
+  "*/Teams*",
+  "*/WeChat*",
+  "*/Weixin*",
+  "*.db",
+  "*.sqlite",
+  "*.sqlite3",
+  "*.pst",
+  "*.ost",
+]

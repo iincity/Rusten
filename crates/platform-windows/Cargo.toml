@@ -1,0 +1,61 @@
+[package]
+name = "platform-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["uffs"]
+uffs = ["dep:uffs-mft"]
+
+[dependencies]
+domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Pipes",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+uffs-mft = { path = "../../vendor/rusten-uffs-mft", optional = true }
+wmi = { version = "0.18.4", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[test]]
+name = "long_path_tests"
+path = "../../tests/windows/long_path_tests.rs"
+
+[[test]]
+name = "hardlink_tests"
+path = "../../tests/windows/hardlink_tests.rs"
+
+[[test]]
+name = "junction_tests"
+path = "../../tests/windows/junction_tests.rs"
+
+[[test]]
+name = "performance_scan_tests"
+path = "../../tests/windows/performance_scan_tests.rs"
+
+[[test]]
+name = "dism_tests"
+path = "../../tests/windows/dism_tests.rs"
+
+[[test]]
+name = "recovery_tests"
+path = "../../tests/windows/recovery_tests.rs"

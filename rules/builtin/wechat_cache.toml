@@ -1,0 +1,88 @@
+id = "wechat_cache"
+name = "WeChat rebuildable data"
+category = "wechat_cache"
+group = "微信专清"
+group_order = 40
+display_name = "微信"
+display_order = 10
+mode = "quick"
+risk = "P3"
+confidence = "high"
+recovery = "recycle"
+processes = ["WeChat.exe"]
+requires_admin = false
+warning = "WeChat cache and media can be rebuilt; business databases are excluded"
+version = "1"
+
+[[display_items]]
+key = "wechat.logs"
+name = "日志"
+order = 10
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/Log/*",
+  "C:/Users/*/Documents/WeChat Files/*/Log/*",
+]
+
+[[display_items]]
+key = "wechat.cache_backup"
+name = "缓存备份"
+order = 20
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/Cache/*",
+  "C:/Users/*/Documents/WeChat Files/*/Cache/*",
+]
+
+[[display_items]]
+key = "wechat.chat_images"
+name = "聊天图片"
+order = 30
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/Image/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/Image/*",
+]
+
+[[display_items]]
+key = "wechat.chat_videos"
+name = "聊天小视频"
+order = 40
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/Video/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/Video/*",
+]
+
+[[display_items]]
+key = "wechat.moments"
+name = "朋友圈"
+order = 50
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/General/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/General/*",
+]
+
+[[display_items]]
+key = "wechat.received_files"
+name = "接收的文件"
+order = 60
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/File/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/File/*",
+]
+
+[match]
+paths = [
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/Log/*",
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/Cache/*",
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/Image/*",
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/Video/*",
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/General/*",
+  "C:/Users/*/AppData/Roaming/Tencent/WeChat/*/FileStorage/File/*",
+  "C:/Users/*/Documents/WeChat Files/*/Log/*",
+  "C:/Users/*/Documents/WeChat Files/*/Cache/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/Image/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/Video/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/General/*",
+  "C:/Users/*/Documents/WeChat Files/*/FileStorage/File/*",
+]
+
+[exclude]
+paths = ["*.db", "*.sqlite", "*/Msg/*", "*/MicroMsg.db"]
