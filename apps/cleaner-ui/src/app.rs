@@ -1125,6 +1125,12 @@ impl CleanerApp {
                             .text_xs()
                             .text_color(rgb(0x66727e))
                             .child("默认全选 · 直接清理"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x66727e))
+                            .child(format!("版本 v{}", env!("CARGO_PKG_VERSION"))),
                     ),
             )
             .child(
