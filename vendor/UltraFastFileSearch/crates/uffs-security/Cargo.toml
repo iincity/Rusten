@@ -1,0 +1,82 @@
+# ============================================================================
+# uffs-security: Security Primitives for UFFS
+# ============================================================================
+# This crate provides encryption, key management, and secure filesystem
+# operations. It has **no dependency** on MFT, search, or UI crates.
+#
+# Layer 0 (Foundation): no internal crate dependencies.
+# ============================================================================
+
+[package]
+name = "uffs-security"
+description = "Security primitives for UFFS: encryption, key storage, secure FS ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Intentionally NOT published.  The crate name reads like a generic
+# cross-platform security primitives library, but the actual public surface
+# is UFFS-internals: `encrypt_cache`/`decrypt_cache` operate on UFFS cache
+# byte-streams, `KDF_DPAPI`/`KDF_KEYCHAIN`/`KDF_HKDF` constants are UFFS
+# cache-header format IDs, `get_cache_key` returns the UFFS daemon's
+# specific key, `runtime_dir::RuntimeFile` models the UFFS-daemon tempfile
+# lifecycle, and `pipe::pipe_name_for_current_user` returns the UFFS-broker
+# pipe name.  Generic-need equivalents already exist on crates.io (`keyring`,
+# `tempfile`, `atomicwrites`, `fs2`, `windows-acl`), and publishing UFFS's
+# shape would commit us to maintaining a security-sensitive public API
+# across 3 platforms with extensive `unsafe` (Windows DACL) — high cost,
+# zero strategic upside.  Reserve the name on crates.io to prevent
+# squatting, but never carry content.  See deep-dive in
+# `docs/refactor/crates-io-publishability-deep-dive.md` §7.3.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target build so the platform-specific items (`#[cfg(target_os = "macos")]`
+# Keychain helpers, `#[cfg(windows)]` DACL helpers, `#[cfg(unix)]` flock
+# helpers) all show up in the rendered docs.  See `uffs-time/Cargo.toml`
+# for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+]
+
+[dependencies]
+# Logging
+tracing.workspace = true
+
+# Platform dirs (for key storage paths)
+dirs-next.workspace = true
+
+# Crypto (Phase S2)
+aes-gcm.workspace = true
+rand.workspace = true
+
+# Memory-mapped file I/O (Phase 2b — runtime_dir::mmap_read_only)
+memmap2.workspace = true
+
+[dev-dependencies]
+# Per-test fixture directories for runtime_dir tests
+tempfile.workspace = true
+
+# File locking (flock on Unix)
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# macOS Keychain (Phase S2)
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+# Windows APIs: file locking (LockFileEx), DACL permissions
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

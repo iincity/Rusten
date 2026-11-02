@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt};
+use std::{borrow::Cow, collections::HashMap, error::Error, fmt};
 
 use serde::Deserialize;
 
@@ -107,6 +107,7 @@ pub struct Rule {
     group_order: u32,
     item_from_path_after: Option<String>,
     display_items: Vec<RuleDisplayItem>,
+    display_patterns: Vec<Vec<PathPattern>>,
     priority: u32,
     mode: CleanupMode,
     risk: RiskLevel,
@@ -117,8 +118,8 @@ pub struct Rule {
     warning: String,
     version: String,
     minimum_os: Option<String>,
-    matching: RuleMatchPaths,
-    excluding: RuleMatchPaths,
+    matching: Vec<PathPattern>,
+    excluding: Vec<PathPattern>,
     operation: RuleOperation,
 }
 
@@ -181,12 +182,15 @@ impl Rule {
     }
 
     pub fn display_item_for_path(&self, path: &crate::NormalizedPath) -> Option<&RuleDisplayItem> {
-        self.display_items.iter().find(|item| {
-            item.paths.iter().any(|pattern| {
-                display_pattern_may_match(pattern, path)
-                    && path_matches(&pattern.replace('/', "\\"), path.display())
+        self.display_items
+            .iter()
+            .zip(&self.display_patterns)
+            .find(|(_, patterns)| {
+                patterns.iter().any(|pattern| {
+                    pattern.may_match(path.display()) && pattern.matches(path.display())
+                })
             })
-        })
+            .map(|(item, _)| item)
     }
 
     pub fn display_name_for_path(&self, path: &crate::NormalizedPath) -> String {
@@ -281,42 +285,30 @@ impl Rule {
         path: &crate::NormalizedPath,
         context: &RuleMatchContext,
     ) -> bool {
-        if self.operation != RuleOperation::ScanCandidates || is_forbidden_path(path) {
+        if self.operation != RuleOperation::ScanCandidates {
             return false;
         }
-        let matches = |pattern: &str| {
-            path_matches(
-                &expand_variables(pattern, &context.variables),
-                path.display(),
-            )
+        let matches = |pattern: &PathPattern, prefilter: bool| {
+            let expanded;
+            let pattern = if context.variables.is_empty() {
+                pattern
+            } else {
+                expanded = PathPattern::new(
+                    expand_variables(&pattern.text, &context.variables).into_owned(),
+                );
+                &expanded
+            };
+            (!prefilter || pattern.may_match(path.display())) && pattern.matches(path.display())
         };
-        self.matching
-            .paths
-            .iter()
-            .any(|pattern| self.may_match_path_pattern(pattern, path, context) && matches(pattern))
-            && !self.excluding.paths.iter().any(|pattern| matches(pattern))
+        self.matching.iter().any(|pattern| matches(pattern, true))
+            && !self.excluding.iter().any(|pattern| matches(pattern, false))
+            && !is_forbidden_path(path)
     }
 
     pub fn may_match_path(&self, path: &crate::NormalizedPath) -> bool {
         self.matching
-            .paths
             .iter()
-            .any(|pattern| self.may_match_path_pattern(pattern, path, &RuleMatchContext::default()))
-    }
-
-    fn may_match_path_pattern(
-        &self,
-        pattern: &str,
-        path: &crate::NormalizedPath,
-        context: &RuleMatchContext,
-    ) -> bool {
-        let expanded = expand_variables(pattern, &context.variables);
-        let prefix = expanded
-            .split(['*', '?'])
-            .next()
-            .unwrap_or_default()
-            .trim_end_matches(['\\', '/']);
-        prefix.is_empty() || path_prefix_matches(prefix, path.display())
+            .any(|pattern| pattern.may_match(path.display()))
     }
 
     pub fn candidate_for(&self, file: &FileRecord) -> Option<CleanupCandidate> {
@@ -394,7 +386,21 @@ impl Rule {
 impl TryFrom<RuleDocument> for Rule {
     type Error = RuleError;
 
-    fn try_from(document: RuleDocument) -> Result<Self, Self::Error> {
+    fn try_from(mut document: RuleDocument) -> Result<Self, Self::Error> {
+        for pattern in document
+            .matching
+            .paths
+            .iter_mut()
+            .chain(&mut document.excluding.paths)
+            .chain(
+                document
+                    .display_items
+                    .iter_mut()
+                    .flat_map(|item| &mut item.paths),
+            )
+        {
+            *pattern = pattern.replace('/', "\\");
+        }
         let required = |value: Option<String>, field: &'static str| {
             value
                 .ok_or(RuleError::MissingField(field))
@@ -416,6 +422,11 @@ impl TryFrom<RuleDocument> for Rule {
             display_order: document.display_order,
             group_order: document.group_order,
             item_from_path_after: document.item_from_path_after,
+            display_patterns: document
+                .display_items
+                .iter()
+                .map(|item| item.paths.iter().cloned().map(PathPattern::new).collect())
+                .collect(),
             display_items: document.display_items,
             priority: document.priority,
             mode: document.mode.ok_or(RuleError::MissingField("mode"))?,
@@ -431,8 +442,18 @@ impl TryFrom<RuleDocument> for Rule {
             warning: required(document.warning, "warning")?,
             version: required(document.version, "version")?,
             minimum_os: document.minimum_os,
-            matching: document.matching,
-            excluding: document.excluding,
+            matching: document
+                .matching
+                .paths
+                .into_iter()
+                .map(PathPattern::new)
+                .collect(),
+            excluding: document
+                .excluding
+                .paths
+                .into_iter()
+                .map(PathPattern::new)
+                .collect(),
             operation: document.operation,
         })
     }
@@ -472,44 +493,59 @@ pub fn generate_candidates(
     candidates
 }
 
-fn expand_variables(pattern: &str, variables: &[(String, crate::NormalizedPath)]) -> String {
-    let mut expanded = pattern.replace('/', "\\");
+fn expand_variables<'a>(
+    pattern: &'a str,
+    variables: &[(String, crate::NormalizedPath)],
+) -> Cow<'a, str> {
+    if variables.is_empty() {
+        return Cow::Borrowed(pattern);
+    }
+    let mut expanded = pattern.to_owned();
     for (name, path) in variables {
         expanded = expanded.replace(&format!("%{name}%"), path.display());
     }
-    expanded
+    Cow::Owned(expanded)
 }
 
-fn path_matches(pattern: &str, path: &str) -> bool {
-    let pattern = pattern.trim_end_matches('\\');
-    let path = path.trim_end_matches('\\');
-    if !pattern.contains('*') && !pattern.contains('?') {
-        return path_prefix_matches(pattern, path);
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PathPattern {
+    text: String,
+    prefix_len: usize,
+    wildcard: bool,
+}
+
+impl PathPattern {
+    fn new(text: String) -> Self {
+        let wildcard_at = text.find(['*', '?']);
+        let prefix_len = text[..wildcard_at.unwrap_or(text.len())]
+            .trim_end_matches('\\')
+            .len();
+        Self {
+            text,
+            prefix_len,
+            wildcard: wildcard_at.is_some(),
+        }
     }
-    glob_matches(pattern.as_bytes(), path.as_bytes())
-}
 
-fn display_pattern_may_match(pattern: &str, path: &crate::NormalizedPath) -> bool {
-    let normalized = pattern.replace('/', "\\");
-    let prefix = normalized
-        .split(['*', '?'])
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(['\\', '/']);
-    prefix.is_empty() || path_prefix_matches(prefix, path.display())
+    fn may_match(&self, path: &str) -> bool {
+        self.prefix_len == 0 || path_prefix_matches(&self.text[..self.prefix_len], path)
+    }
+
+    fn matches(&self, path: &str) -> bool {
+        let pattern = self.text.trim_end_matches('\\');
+        let path = path.trim_end_matches('\\');
+        if self.wildcard {
+            glob_matches(pattern.as_bytes(), path.as_bytes())
+        } else {
+            path_prefix_matches(pattern, path)
+        }
+    }
 }
 
 fn path_prefix_matches(pattern: &str, path: &str) -> bool {
-    let mut path_chars = path.chars();
-    for pattern_char in pattern.chars() {
-        let Some(path_char) = path_chars.next() else {
-            return false;
-        };
-        if !path_char.eq_ignore_ascii_case(&pattern_char) {
-            return false;
-        }
-    }
-    matches!(path_chars.next(), None | Some('\\'))
+    path.get(..pattern.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(pattern))
+        && matches!(path.as_bytes().get(pattern.len()), None | Some(b'\\'))
 }
 
 fn glob_matches(pattern: &[u8], path: &[u8]) -> bool {

@@ -1,0 +1,148 @@
+# ============================================================================
+# uffs_mft: MFT Reading & Parsing Library
+# ============================================================================
+# This crate provides direct NTFS Master File Table (MFT) reading
+# capabilities, outputting data as Polars DataFrames.
+#
+# Features:
+# - Direct MFT reading (bypasses Windows file enumeration APIs)
+# - Async I/O for high throughput
+# - Parquet persistence for fast index loading
+# - Cross-platform abstractions (Windows-only for MFT, but API is portable)
+# ============================================================================
+
+[package]
+name = "uffs-mft"
+description = "NTFS MFT reading library for UFFS (Ultra Fast File Search)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Per-crate README override.  Inheriting `readme.workspace = true`
+# resolves to the workspace-root app README (`../../README.md`), the
+# wrong artifact for this library crate's crates.io / docs.rs page and
+# the source of cargo's "readme appears to be a path outside of the
+# package" warning.  Pointing at the crate's own `README.md` (alongside
+# this manifest) ships the right doc and silences the warning.  Permitted
+# by uffs-manifest-audit invariant 3.5 via `KnownExceptions::readme_override_ok`
+# (see `scripts/ci/uffs-manifest-audit/src/audit.rs`).  Issue #240.
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+
+# Phase R6→R8 deviation row 5 — polars-subtree publishability deferred.
+# This crate has a direct `uffs-polars.workspace = true` dep and uses
+# polars types extensively (~28 import sites).  Until polars upstream
+# publishes a release with the nightly-API patches our git/rev pin
+# carries, `cargo package` (and therefore release-plz) hard-fails.  See
+# `crates/uffs-polars/Cargo.toml` and the deviation log row 5 in
+# `docs/architecture/release-automation-plan.md`.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target build so `#[cfg(windows)]` MFT readers and `#[cfg(unix)]`
+# offline Parquet helpers BOTH render in docs.  See `uffs-time/Cargo.toml`
+# for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[[bin]]
+# Phase 1 follow-up F1.13 (issue #213): hyphenated binary name aligned
+# with the rest of the workspace (`uffs`, `uffsd`, `uffsmcp`, `uffs-gen-hooks`,
+# `uffs-gen-workflow`).  The Rust library identifier `uffs-mft` (Cargo-forced
+# underscore for valid Rust identifiers) is unchanged — only the
+# runtime artifact filename flips from `uffs-mft` / `uffs-mft.exe` to
+# `uffs-mft` / `uffs-mft.exe`.  Single-shot rename (no deprecation
+# cycle) because the project has no published-API contract yet — see
+# the issue's user-approved rename directive for the rationale.
+name = "uffs-mft"
+path = "src/main.rs"
+
+[dependencies]
+uffs-version.workspace = true
+# Internal
+uffs-polars.workspace = true
+uffs-text.workspace = true
+uffs-security.workspace = true
+
+# Data structures
+bitflags.workspace = true
+smallvec.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+rayon.workspace = true
+zstd.workspace = true
+
+# CLI (for uffs-mft binary)
+clap.workspace = true
+indicatif.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+dirs-next.workspace = true
+chrono.workspace = true
+hostname.workspace = true
+rustc-hash.workspace = true
+zerocopy.workspace = true
+
+# Wire-format (de)serialisation for `DriveLetter` — used by the
+# daemon event stream and the compact index header.  The dep is
+# narrow: only the `Serialize`/`Deserialize` derives + manual impls
+# on `DriveLetter` itself.
+serde.workspace = true
+
+# Chaos test harness dependencies (ChaosMftReader is public for CLI)
+rand.workspace = true
+rand_chacha.workspace = true
+crossbeam-channel.workspace = true
+bytemuck.workspace = true
+
+# Windows APIs (Windows only)
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+# `--format json` output for the `info` / `drives` commands (consumed by the
+# benchmark report) — only the Windows-gated commands use it.
+serde_json.workspace = true
+
+# SHA-256 + hex for the `capture` bundle manifest / SHA256SUMS integrity file
+# (Windows-only capture path).
+sha2.workspace = true
+hex.workspace = true
+
+# Unix privilege check (`is_elevated` → geteuid() == 0)
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+sha2.workspace = true                                            # For SHA256 validation in chaos tests
+hex.workspace = true                                             # For hex-encoding SHA256 digests (sha2 0.11 removed LowerHex impl)
+tracing-subscriber = { workspace = true }
+tempfile.workspace = true
+
+[[bench]]
+name = "mft_read"
+harness = false
+
+# Embeds the UFFS icon + version info + shared app.manifest into `uffs-mft.exe`
+# (see build.rs). A metadata-less binary is both unbranded and a mild antivirus
+# false-positive signal. Only affects the bin target; the library is unchanged.
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

@@ -334,16 +334,14 @@ impl FileScanner for UffsFileScanner {
             }
             entries_seen = entries_seen.saturating_add(1);
 
-            let Some(parent_path) = parent_path(&entry.path, &root) else {
-                continue;
-            };
-            let Some(parent) = directory_ids
-                .get(&parent_path.display().to_ascii_lowercase())
-                .copied()
-                .or_else(|| directory_index.directory_id(&parent_path))
-            else {
-                continue;
-            };
+            let parent = ensure_directory_path(
+                &entry.path,
+                &root,
+                &mut directory_ids,
+                &mut directory_index,
+                &mut directory_count,
+                &sender,
+            )?;
             let source = &self.index.records[entry.record_index];
             let identity = uffs_identity(source, root_metadata.identity().volume_serial);
             let file_logical_size = source.first_stream.size.length;
@@ -353,13 +351,15 @@ impl FileScanner for UffsFileScanner {
             if entry.reparse_tag.is_some() {
                 if entry.directory && directory_identities.insert(identity) {
                     let directory_key = entry.path.display().to_ascii_lowercase();
-                    if !directory_ids.contains_key(&directory_key) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) =
+                        directory_ids.entry(directory_key)
+                    {
                         let node = DirectoryNode::new(entry.path.clone(), parent);
                         sender
                             .send_event(ScanEvent::Directory(node.clone()))
                             .map_err(|_| receiver_closed())?;
                         if let Some(id) = directory_index.add_directory(node) {
-                            directory_ids.insert(directory_key, id);
+                            slot.insert(id);
                             directory_count = directory_count.saturating_add(1);
                         }
                     }
@@ -553,13 +553,15 @@ impl UffsFileScanner {
             if source.reparse_tag != 0 {
                 if source.is_directory() && directory_identities.insert(identity) {
                     let directory_key = path.display().to_ascii_lowercase();
-                    if !directory_ids.contains_key(&directory_key) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) =
+                        directory_ids.entry(directory_key)
+                    {
                         let node = DirectoryNode::new(path.clone(), parent);
                         sender
                             .send_event(ScanEvent::Directory(node.clone()))
                             .map_err(|_| receiver_closed())?;
                         if let Some(id) = directory_index.add_directory(node) {
-                            directory_ids.insert(directory_key, id);
+                            slot.insert(id);
                             directory_count = directory_count.saturating_add(1);
                         }
                     }
@@ -572,13 +574,15 @@ impl UffsFileScanner {
                     continue;
                 }
                 let directory_key = path.display().to_ascii_lowercase();
-                if !directory_ids.contains_key(&directory_key) {
+                if let std::collections::hash_map::Entry::Vacant(slot) =
+                    directory_ids.entry(directory_key)
+                {
                     let node = DirectoryNode::new(path, parent);
                     sender
                         .send_event(ScanEvent::Directory(node.clone()))
                         .map_err(|_| receiver_closed())?;
                     if let Some(id) = directory_index.add_directory(node) {
-                        directory_ids.insert(directory_key, id);
+                        slot.insert(id);
                     }
                     directory_count = directory_count.saturating_add(1);
                 }
@@ -591,7 +595,7 @@ impl UffsFileScanner {
                 allocated_size = allocated_size.saturating_add(source.first_stream.size.allocated);
             }
 
-            if entries_seen % 8192 == 0 || entries_seen == options.max_entries {
+            if entries_seen.is_multiple_of(8192) || entries_seen == options.max_entries {
                 sender
                     .send_event(ScanEvent::ScannerStatus {
                         engine: ScanEngine::Uffs,
@@ -828,6 +832,43 @@ fn ntfs_file_index(record_number: u64, sequence_number: u16) -> u128 {
 
 #[cfg(all(test, feature = "uffs"))]
 mod tests {
+    #[test]
+    fn missing_parent_is_indexed_once_and_keeps_its_children() {
+        let root = domain::normalize_path(r"C:\").unwrap();
+        let mut index = domain::ScanIndex::new_with_path_matcher(root.clone(), |_, _| {
+            panic!("parent resolution must not search the whole directory index")
+        });
+        let mut ids = std::collections::HashMap::new();
+        ids.insert(
+            root.display().to_ascii_lowercase(),
+            index.root_directory_id(),
+        );
+        let mut count = 1;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let file = domain::normalize_path(r"C:\Missing\Nested\file.tmp").unwrap();
+        let parent =
+            super::ensure_directory_path(&file, &root, &mut ids, &mut index, &mut count, &sender)
+                .unwrap();
+        assert_eq!(
+            index.directory(parent).unwrap().path().display(),
+            r"C:\Missing\Nested"
+        );
+        assert_eq!(count, 3);
+        assert_eq!(receiver.try_iter().count(), 2);
+        let same = super::ensure_directory_path(
+            &domain::normalize_path(r"C:\missing\nested\other.tmp").unwrap(),
+            &root,
+            &mut ids,
+            &mut index,
+            &mut count,
+            &sender,
+        )
+        .unwrap();
+        assert_eq!(same, parent);
+        assert_eq!(count, 3);
+        assert_eq!(receiver.try_iter().count(), 0);
+    }
+
     #[test]
     fn cached_index_reader_exposes_a_sync_entrypoint() {
         let _ = uffs_mft::MftReader::read_index_cached_sync;

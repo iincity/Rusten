@@ -110,7 +110,17 @@ name = "人事应用"
 order = 160
 
 [match]
-paths = ["C:/Users/*/AppData/Local/*/Cache/*"]
+paths = [
+  "C:/Users/*/AppData/Local/*/Cache/*",
+  "C:/Users/*/AppData/Local/Tencent/WeCom/Cache/*",
+  "C:/Users/*/AppData/Local/Tencent/QQ/Cache/*",
+  "C:/Users/*/AppData/Local/Thunder Network/Thunder/Cache/*",
+  "C:/Users/*/AppData/Local/Tencent/Meeting/Cache/*",
+  "C:/Users/*/AppData/Local/Adobe/Acrobat/Cache/*",
+  "C:/Users/*/AppData/Local/Microsoft/Office/Cache/*",
+  "C:/Users/*/AppData/Local/Sun/Java/Deployment/cache/*",
+  "C:/Users/*/AppData/Local/Oray/Sunlogin/Cache/*",
+]
 
 [exclude]
 paths = [

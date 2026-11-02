@@ -91,7 +91,8 @@ impl ScanHandle {
 
 impl Drop for ScanHandle {
     fn drop(&mut self) {
-        self.cancellation.cancel();
-        let _ = self.worker.take();
+        if self.worker.take().is_some() {
+            self.cancellation.cancel();
+        }
     }
 }

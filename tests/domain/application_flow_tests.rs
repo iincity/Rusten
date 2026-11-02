@@ -69,15 +69,23 @@ fn scan_service_preserves_shared_index_and_terminal_status() {
         },
         FakeRules,
     );
-    let handle = service.start(ScanRequest {
-        root: normalize_path(r"C:\").unwrap(),
-        max_depth: 4,
-        max_entries: 100,
-    });
+    let cancellation = CancellationToken::default();
+    let handle = service.start_with_cancellation(
+        ScanRequest {
+            root: normalize_path(r"C:\").unwrap(),
+            max_depth: 4,
+            max_entries: 100,
+        },
+        cancellation.clone(),
+    );
     let result = handle.finish().unwrap();
     assert_eq!(result.status(), ScanStatus::Complete);
     assert_eq!(result.index().statistics().file_count(), 1);
     assert_eq!(result.files().len(), 1);
+    assert!(
+        !cancellation.is_cancelled(),
+        "finishing must not cancel subsequent finalization"
+    );
 }
 
 #[test]

@@ -150,6 +150,13 @@ pub struct OperationRecord {
 
 pub trait OperationLog {
     fn append(&mut self, record: OperationRecord) -> Result<(), AppError>;
+
+    fn append_batch(&mut self, records: &[OperationRecord]) -> Result<(), AppError> {
+        for record in records {
+            self.append(record.clone())?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

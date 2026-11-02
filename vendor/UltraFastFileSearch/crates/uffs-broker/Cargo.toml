@@ -1,0 +1,105 @@
+# ============================================================================
+# uffs-broker: Windows Access Broker
+# ============================================================================
+# Tiny Windows service that provides elevated MFT handles to the daemon.
+# The daemon runs as a normal user; the broker runs elevated and hands
+# out read-only volume handles on request.
+# ============================================================================
+
+[package]
+name = "uffs-broker"
+description = "UFFS Access Broker — Windows service for elevated MFT handle brokering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Intentionally NOT published.  `uffs-broker` is a Windows-only `[[bin]]`
+# (elevated handle vendor) — there is no library API.  `cargo install
+# uffs-broker` would install a standalone Windows handle-broker binary,
+# which is meaningless outside the UFFS daemon pairing.  Reserve the name
+# on crates.io to prevent squatting, but never carry content.  See
+# deep-dive in `docs/refactor/crates-io-publishability-deep-dive.md` §7.5.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# `uffs-broker` is a Windows-elevated handle broker; on non-Windows the
+# binary's `main()` short-circuits.  Override `default-target` to the MSVC
+# triple so docs.rs renders the Windows API integration that's the entire
+# point of this crate.  See `uffs-time/Cargo.toml` for the rationale on
+# `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-pc-windows-msvc"]
+default-target = "x86_64-pc-windows-msvc"
+
+[[bin]]
+name = "uffs-broker"
+path = "src/main.rs"
+
+# Cross-platform deps: `main.rs` calls `uffs_version::handle_version!` on every
+# platform (so `uffs-broker --version` works and the self-update probe parses
+# it), so this is used on Linux/macOS too — not a visible-but-unused marker.
+#
+# `uffs-broker-protocol` and `thiserror` are also unconditional: the Snapshot
+# Manager's lease-lifecycle state machine (`src/snapshot_lease.rs`) is
+# deliberately cross-platform-testable — it's the one piece of this
+# otherwise Windows-only crate the implementation plan (§4.2) calls out for
+# real unit tests against a fake `VssProvider`, so its wire types
+# (`VolumeIdentity`, `SnapshotLeaseState`) and error type need to compile on
+# every host, not just Windows.
+[dependencies]
+uffs-version.workspace = true
+uffs-broker-protocol.workspace = true
+thiserror.workspace = true
+
+# Windows-only deps: the elevated handle-broker logic in `broker.rs` (and
+# the Snapshot Manager's COM/pipe/reconciliation code in
+# `broker/snapshot_manager/`) is fully `#[cfg(windows)]`, so these
+# supporting crates compile only on the Windows target.  Scoped to
+# `[target.'cfg(windows)'.dependencies]` so the bin's non-Windows
+# compilation (a tiny error-message stub in `main.rs` that uses only
+# `eprintln!`, plus the cross-platform `snapshot_lease` module) doesn't pull
+# in `anyhow`, `tracing`, `tracing-subscriber`, or `windows` — each would
+# otherwise be visible-but-unused on Linux/macOS and need a `use X as _;`
+# marker.  F5 / issue #205.
+[target.'cfg(windows)'.dependencies]
+anyhow.workspace = true
+# `tracing` macros are used heavily in the Windows-only `broker.rs`; the
+# non-Windows `main.rs` stub uses `eprintln!`, so tracing is not needed
+# off Windows.
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Daily-rotating, retention-capped file logging for the SCM service path:
+# a service has no stdout, so the broker's own account of an incident
+# was previously written nowhere at all. Bounded on purpose — `uffsd`
+# uses `rolling::never` and one production log reached 305 MB.
+tracing-appender.workspace = true
+windows.workspace = true
+# Shared in-process Authenticode (`WinVerifyTrust`) verification — the
+# single implementation now lives in `uffs-security` (DRY with the
+# self-updater) instead of a broker-local copy.
+uffs-security.workspace = true
+# Native SCM control for the operator-facing `--status` / `--start` /
+# `--stop` commands — the same locale-proof primitive the updater uses.
+uffs-winsvc.workspace = true
+# The private Broker<->uffs-vss-requestor control protocol
+# (`broker/snapshot_manager/vss_helper.rs`) is JSON-lines — a tiny,
+# internal-only wire format that doesn't warrant a hand-rolled binary
+# codec the way the public/Coordinator-facing protocols do.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# Embeds the UFFS icon + version info + shared app.manifest into
+# `uffs-broker.exe` (see build.rs). A metadata-less binary is both unbranded
+# and a mild antivirus false-positive signal.
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

@@ -1,4 +1,16 @@
 .worktrees/
 .superpowers/
 target/
-vendor/
+vendor/*
+!vendor/rusten-uffs-mft/
+!vendor/nsh-platform-windows/
+!vendor/UltraFastFileSearch/
+vendor/UltraFastFileSearch/**
+!vendor/UltraFastFileSearch/Cargo.toml
+!vendor/UltraFastFileSearch/README.md
+!vendor/UltraFastFileSearch/LICENSE
+!vendor/UltraFastFileSearch/rust-toolchain.toml
+!vendor/UltraFastFileSearch/LICENSES/
+!vendor/UltraFastFileSearch/LICENSES/**
+!vendor/UltraFastFileSearch/crates/
+!vendor/UltraFastFileSearch/crates/**

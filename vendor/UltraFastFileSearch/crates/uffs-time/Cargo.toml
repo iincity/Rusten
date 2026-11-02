@@ -1,0 +1,62 @@
+# ============================================================================
+# uffs-time: NTFS FILETIME helpers
+# ============================================================================
+# Layer 0 Foundation crate.  No internal or external dependencies.
+#
+# Pure `const fn` arithmetic for converting Windows FILETIME (100-ns ticks
+# since 1601-01-01) to calendar fields and applying timezone bias.
+#
+# Extracted from `uffs-mft` so the thin CLI can depend on these helpers
+# without transitively linking tokio, polars, reqwest, or object_store.
+# ============================================================================
+
+[package]
+name = "uffs-time"
+description = "NTFS FILETIME arithmetic for UFFS (pure const fn, zero deps)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Per-crate README override.  Inheriting `readme.workspace = true`
+# resolves to the workspace-root app README (`../../README.md`), the
+# wrong artifact for this library crate's crates.io / docs.rs page and
+# the source of cargo's "readme appears to be a path outside of the
+# package" warning.  Pointing at the crate's own `README.md` (alongside
+# this manifest) ships the right doc and silences the warning.  Permitted
+# by uffs-manifest-audit invariant 3.5 via `KnownExceptions::readme_override_ok`
+# (see `scripts/ci/uffs-manifest-audit/src/audit.rs`).  Issue #240.
+readme = "README.md"
+# Per-crate keywords + categories override (Phase 1 §3.5 escape hatch
+# via `KnownExceptions::keywords_override_ok` / `categories_override_ok`
+# in `scripts/ci/uffs-manifest-audit/src/audit.rs`).  This is a library
+# crate with a *very* different role from the workspace app: it is a
+# zero-dep, `#![no_std]`, pure-const-fn helper for NTFS FILETIME tick
+# arithmetic, useful to anyone parsing on-disk Windows timestamps —
+# not just to UFFS itself.  The workspace defaults
+# (`["mft", "ntfs", "file-search", "windows", "polars"]` /
+# `["filesystem", "command-line-utilities"]`) describe the app and
+# would bury this crate in unrelated search results.  See issue #241
+# for the full discoverability rationale.
+keywords = ["ntfs", "filetime", "datetime", "windows", "no-std"]
+categories = ["date-and-time"]
+# Explicitly publishable — overrides the workspace default `publish = false`
+# set in root `Cargo.toml`'s `[workspace.package]`.  Member of the 5-crate
+# publishable subset (`uffs-broker`, `uffs-broker-protocol`, `uffs-security`,
+# `uffs-text`, `uffs-time`) per `release-automation-baseline.md` §10 row 5.
+publish = true
+
+# Phase R6 of `release-automation-plan.md` step 3: docs.rs build configuration.
+# `all-features = true` ensures docs.rs renders the full public API surface.
+# `rustdoc-args = ["--cfg", "docsrs"]` enables the `docsrs` cfg so platform-
+# or feature-gated items can be doc-ifyed via `#[cfg_attr(docsrs, doc(cfg(...)))]`
+# without affecting local `cargo doc`.  Inert until the crate is actually
+# published — docs.rs reads it at build time.  See https://docs.rs/about/builds.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+
+[lints]
+workspace = true

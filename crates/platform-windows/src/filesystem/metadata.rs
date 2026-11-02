@@ -189,7 +189,8 @@ pub fn delete_verified_file(
         ));
     }
     if metadata.identity() != expected_identity
-        || metadata.logical_size().max(metadata.allocated_size()) != expected_size
+        || (metadata.logical_size() != expected_size
+            && metadata.logical_size().max(metadata.allocated_size()) != expected_size)
         || metadata.last_write_time() != expected_last_write
     {
         return Err(Error::other("file changed after scanning"));

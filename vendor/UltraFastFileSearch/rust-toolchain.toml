@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+
+# Rust Toolchain Configuration for UFFS Project
+# This file ensures consistent toolchain usage across all environments
+# and prevents issues caused by switching between stable/nightly toolchains
+
+[toolchain]
+# Pinned nightly — single source of truth for every environment.
+# CI must NOT override this with `@nightly`; workflows install via
+# `rustup show` (which reads this file) so the pin is always honored.
+#
+# The pin lives in the `channel` key at the bottom of this block — do
+# not restate it in prose here; a duplicated date silently rots (this
+# comment claimed 2026-07-06 while the channel had already moved to
+# 2026-07-23).  Requires ethnum >= 1.5.3 (the workspace Cargo.lock
+# resolves 1.5.3 transitively via polars-compute + parquet — verify
+# with `grep -A1 'name = "ethnum"' Cargo.lock`).
+#
+# Resolved-history note (kept so a future bump does not re-tread this):
+#   * nightly-2026-04-13 broke tokio 1.51.1 (unresolved imports in
+#     tokio::io::util).  Tokio 1.52.1 resolved it; trigger is gone.
+#   * nightlies 2026-04-18 .. (the 04-17→05-xx window) regressed any
+#     build still pinning ethnum 1.5.2 with:
+#         error[E0512]: cannot transmute between types of different sizes
+#          --> ethnum-1.5.2/src/error.rs:16
+#             `mem::transmute::<(), TryFromIntError>(())`
+#     because std's `TryFromIntError` private field grew 0 -> 8 bits.
+#     ethnum 1.5.3 removed that zero-sized transmute, so the regression
+#     is fixed at the dependency level — NOT by holding an old nightly.
+#     If you bump the channel and hit E0512, the fix is
+#     `cargo update -p ethnum --precise 1.5.3` (or newer), never a
+#     toolchain downgrade.
+#
+#   * nightly-2026-08-25 and later (as of 2026-08-29) fail our clippy gate
+#     with 14 × `clippy::empty_enums` ("enum with no variants") at every
+#     `#[derive(FromBytes)]` site in uffs-mft.  Root cause: rust#155499
+#     stabilized `never_type` on 2026-08-24, which turns on the guard
+#     inside `empty_enums`, and zerocopy-derive 0.8.56 emits one
+#     uninhabited `enum ẕ<field> {}` per field inside a generated
+#     `#[allow(...)]` block that lacks that lint (call-site spans, so it
+#     lands on OUR derive lines).  Upstream: google/zerocopy#3414 (fix
+#     proposed in google/zerocopy#3600); tracked here in #617.  Policy:
+#     no local `#[allow]`, no source patch of a crate we do not own —
+#     the pin holds until a zerocopy release carries the fix, then the
+#     resolution is a dependency bump (the ethnum pattern), never a lint
+#     exception.
+#   * nightly-2026-08-22..24 were additionally rejected by toolchain-sync
+#     on 2026-08-29: clippy-driver exited 101 on the `uffs-ci-pipeline`
+#     test target (no diagnostic in the log tail).  Not root-caused —
+#     moot while the 08-25+ block above stands; re-check on the next bump.
+#
+# Run `just toolchain-sync` to re-attempt a channel bump; the CI
+# pipeline auto-refreshes on `ship --fresh` unless `--skip-toolchain-sync`
+# is passed.
+channel = "nightly-2026-08-21"
+
+# Specify components that should always be available
+components = [
+  "rustc",         # The Rust compiler
+  "cargo",         # Package manager and build tool
+  "rustfmt",       # Code formatter
+  "clippy",        # Linter for catching common mistakes
+  "rust-src",      # Source code for standard library (needed for IDE features)
+  "rust-analyzer", # Language server for IDE support
+  "llvm-tools",    # LLVM tools for coverage and profiling
+  "miri",          # Interpreter for detecting undefined behavior
+]
+
+# Specify targets for cross-compilation support
+targets = [
+  "x86_64-unknown-linux-gnu",  # Linux x64
+  "x86_64-pc-windows-msvc",    # Windows x64
+  "x86_64-apple-darwin",       # macOS Intel
+  "aarch64-apple-darwin",      # macOS Apple Silicon
+  "aarch64-unknown-linux-gnu", # Linux ARM64
+]
+
+# Profile for development - optimized for fast compilation and good debugging
+profile = "default"

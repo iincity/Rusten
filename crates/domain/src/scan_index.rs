@@ -1,6 +1,7 @@
 use std::{
     cmp::{Ordering, Reverse},
     collections::{BinaryHeap, HashMap},
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -59,6 +60,7 @@ struct FileFingerprint {
 
 #[derive(Debug)]
 pub struct ScanIndex {
+    directory_entries_cache: Mutex<HashMap<DirectoryId, Arc<Vec<DirectoryEntry>>>>,
     root: NormalizedPath,
     directory_arena: Vec<DirectoryNode>,
     directory_lookup: HashMap<String, DirectoryId>,
@@ -83,6 +85,24 @@ pub struct FileFilter {
     pub owner: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub path: NormalizedPath,
+    pub directory_id: Option<DirectoryId>,
+    pub file_identity: Option<FileIdentity>,
+    pub logical_size: u64,
+    pub allocated_size: u64,
+    pub last_write_time: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryPage {
+    pub entries: Vec<DirectoryEntry>,
+    pub offset: usize,
+    pub total: usize,
+}
+
 impl ScanIndex {
     pub const TOP_FILES_CAPACITY: usize = 1000;
     pub const WARNINGS_CAPACITY: usize = 1024;
@@ -96,6 +116,7 @@ impl ScanIndex {
         statistics.add_directory();
 
         Self {
+            directory_entries_cache: Mutex::new(HashMap::new()),
             root: root.clone(),
             directory_arena: vec![DirectoryNode::root(root)],
             directory_lookup,
@@ -123,6 +144,34 @@ impl ScanIndex {
         &self.root
     }
 
+    /// Rebuilds accounting after confirmed removals, preserving directory IDs.
+    pub fn without_paths(&self, removed: &std::collections::HashSet<String>) -> Self {
+        let mut index = Self::new(self.root.clone());
+        index.path_matcher = self.path_matcher;
+        for directory in self.directory_arena.iter().skip(1) {
+            index.add_directory(DirectoryNode::new(
+                directory.path().clone(),
+                directory.parent().expect("non-root parent"),
+            ));
+        }
+        for file in self.files() {
+            if !removed.contains(file.path().display()) {
+                index.add_file(file);
+            }
+        }
+        index.cleanup_candidates = self
+            .cleanup_candidates
+            .iter()
+            .filter(|candidate| !removed.contains(candidate.path.display()))
+            .cloned()
+            .collect();
+        index.reparse_points = self.reparse_points.clone();
+        index.warnings = self.warnings.clone();
+        index.omitted_warnings = self.omitted_warnings;
+        index.status = self.status;
+        index
+    }
+
     pub fn root_directory_id(&self) -> DirectoryId {
         DirectoryId(0)
     }
@@ -145,6 +194,7 @@ impl ScanIndex {
         );
 
         let id = DirectoryId(self.directory_arena.len());
+        self.directory_entries_cache.get_mut().unwrap().clear();
         self.directory_lookup.insert(path_key, id);
         self.directory_arena[parent.0].add_child(id);
         self.directory_arena.push(directory);
@@ -157,6 +207,7 @@ impl ScanIndex {
             return false;
         }
         let parent = file.parent();
+        self.directory_entries_cache.get_mut().unwrap().clear();
         assert!(
             parent.0 < self.directory_arena.len(),
             "file parent directory must be added before the file"
@@ -220,21 +271,31 @@ impl ScanIndex {
     }
 
     pub fn files(&self) -> Vec<FileRecord> {
+        self.iter_files().collect()
+    }
+
+    pub fn iter_files(&self) -> impl Iterator<Item = FileRecord> + '_ {
+        self.files_matching(|_| true)
+    }
+
+    pub fn files_matching<'a>(
+        &'a self,
+        matches: impl Fn(&str) -> bool + 'a,
+    ) -> impl Iterator<Item = FileRecord> + 'a {
         self.file_fingerprints
             .iter()
-            .flat_map(|(identity, records)| {
-                records.iter().map(move |record| {
-                    FileRecord::new(
-                        NormalizedPath::from_display_unchecked(record.path.clone()),
-                        record.parent,
-                        *identity,
-                        record.logical_size,
-                        record.allocated_size,
-                    )
-                    .with_facts(record.facts.clone())
-                })
+            .flat_map(|(identity, records)| records.iter().map(move |record| (identity, record)))
+            .filter(move |(_, record)| matches(&record.path))
+            .map(|(identity, record)| {
+                FileRecord::new(
+                    NormalizedPath::from_display_unchecked(record.path.clone()),
+                    record.parent,
+                    *identity,
+                    record.logical_size,
+                    record.allocated_size,
+                )
+                .with_facts(record.facts.clone())
             })
-            .collect()
     }
 
     pub fn filter_files(&self, filter: &FileFilter) -> Vec<FileRecord> {
@@ -268,6 +329,141 @@ impl ScanIndex {
 
     pub fn directory(&self, id: DirectoryId) -> Option<&DirectoryNode> {
         self.directory_arena.get(id.0)
+    }
+
+    pub fn directory_page(
+        &self,
+        directory: DirectoryId,
+        offset: usize,
+        limit: usize,
+        query: Option<&str>,
+    ) -> DirectoryPage {
+        let entries = self.directory_entries(directory);
+        let query = query.map(str::to_lowercase);
+        let matches = |entry: &&DirectoryEntry| {
+            query
+                .as_ref()
+                .is_none_or(|query| entry.name.to_lowercase().contains(query))
+        };
+        let total = if query.is_none() {
+            entries.len()
+        } else {
+            entries.iter().filter(matches).count()
+        };
+        let entries = entries
+            .iter()
+            .filter(matches)
+            .skip(offset)
+            .take(limit.clamp(1, 80))
+            .cloned()
+            .collect();
+        DirectoryPage {
+            entries,
+            offset,
+            total,
+        }
+    }
+
+    /// Sorted immediate children, shared across pages and map projections.
+    pub fn directory_entries(&self, directory: DirectoryId) -> Arc<Vec<DirectoryEntry>> {
+        if let Some(entries) = self.directory_entries_cache.lock().unwrap().get(&directory) {
+            return Arc::clone(entries);
+        }
+        let mut entries = Vec::new();
+        if let Some(parent) = self.directory(directory) {
+            for child_id in parent.children() {
+                let Some(child) = self.directory(*child_id) else {
+                    continue;
+                };
+                let path = child.path().display();
+                let name = path.rsplit('\\').next().unwrap_or(path);
+                {
+                    entries.push((
+                        true,
+                        name.to_lowercase(),
+                        DirectoryEntry {
+                            name: name.to_owned(),
+                            path: child.path().clone(),
+                            directory_id: Some(*child_id),
+                            file_identity: None,
+                            logical_size: child.logical_size(),
+                            allocated_size: child.allocated_size(),
+                            last_write_time: 0,
+                        },
+                    ));
+                }
+            }
+            for (identity, records) in &self.file_fingerprints {
+                for record in records.iter().filter(|record| record.parent == directory) {
+                    let name = record.path.rsplit('\\').next().unwrap_or(&record.path);
+                    entries.push((
+                        false,
+                        name.to_lowercase(),
+                        DirectoryEntry {
+                            name: name.to_owned(),
+                            path: NormalizedPath::from_display_unchecked(record.path.clone()),
+                            directory_id: None,
+                            file_identity: Some(*identity),
+                            logical_size: record.logical_size,
+                            allocated_size: record.allocated_size,
+                            last_write_time: record.facts.last_write_time,
+                        },
+                    ));
+                }
+            }
+        }
+        entries.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        let entries = Arc::new(entries.into_iter().map(|(_, _, entry)| entry).collect());
+        self.directory_entries_cache
+            .lock()
+            .unwrap()
+            .insert(directory, Arc::clone(&entries));
+        entries
+    }
+
+    pub fn files_under(&self, directory: DirectoryId, limit: usize) -> Vec<FileRecord> {
+        let mut descendants = Vec::new();
+        let mut pending = vec![directory];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.directory(id) else {
+                continue;
+            };
+            pending.extend_from_slice(node.children());
+            descendants.push(id);
+        }
+        let mut files: Vec<_> = self
+            .file_fingerprints
+            .iter()
+            .flat_map(|(identity, records)| {
+                let descendants = &descendants;
+                records.iter().filter_map(move |record| {
+                    descendants
+                        .contains(&record.parent)
+                        .then_some((identity, record))
+                })
+            })
+            .collect();
+        files.sort_by(|left, right| {
+            right
+                .1
+                .logical_size
+                .max(right.1.allocated_size)
+                .cmp(&left.1.logical_size.max(left.1.allocated_size))
+        });
+        files
+            .into_iter()
+            .take(limit)
+            .map(|(identity, record)| {
+                FileRecord::new(
+                    NormalizedPath::from_display_unchecked(record.path.clone()),
+                    record.parent,
+                    *identity,
+                    record.logical_size,
+                    record.allocated_size,
+                )
+                .with_facts(record.facts.clone())
+            })
+            .collect()
     }
 
     pub fn directories(&self) -> &[DirectoryNode] {
@@ -445,5 +641,146 @@ impl ScanIndex {
             self.top_files_heap.pop();
             self.top_files_heap.push(Reverse(entry));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::normalize_path;
+
+    fn populated_directory_index(file_count: usize) -> ScanIndex {
+        let root = normalize_path(r"C:\Fixture").unwrap();
+        let mut index = ScanIndex::new(root);
+        for number in 0..file_count {
+            index.add_file(FileRecord::new(
+                normalize_path(&format!(r"C:\Fixture\file-{number:03}.bin")).unwrap(),
+                index.root_directory_id(),
+                FileIdentity {
+                    volume_serial: 1,
+                    file_index: number as u128 + 1,
+                },
+                number as u64 + 1,
+                number as u64 + 1,
+            ));
+        }
+        index
+    }
+
+    #[test]
+    fn directory_page_is_sorted_and_bounded() {
+        let index = populated_directory_index(100);
+        let page = index.directory_page(index.root_directory_id(), 80, 80, None);
+        assert_eq!(page.total, 100);
+        assert_eq!(page.offset, 80);
+        assert_eq!(page.entries.len(), 20);
+    }
+
+    #[test]
+    fn cached_directory_entries_refresh_after_files_and_directories_change() {
+        let mut index = populated_directory_index(2);
+        let root = index.root_directory_id();
+        let cached = index.directory_entries(root);
+        assert!(Arc::ptr_eq(&cached, &index.directory_entries(root)));
+        let child = index
+            .add_directory(DirectoryNode::new(
+                normalize_path(r"C:\Fixture\child").unwrap(),
+                root,
+            ))
+            .unwrap();
+        index.add_file(FileRecord::new(
+            normalize_path(r"C:\Fixture\child\linked.bin").unwrap(),
+            child,
+            FileIdentity {
+                volume_serial: 1,
+                file_index: 1,
+            },
+            1,
+            1,
+        ));
+        let entries = index.directory_entries(root);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].logical_size, 1);
+        assert_eq!(cached.len(), 2);
+        assert_eq!(index.directory_page(child, 0, 80, Some("LINKED")).total, 1);
+        let matching = index
+            .files_matching(|path| path.ends_with("linked.bin"))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].parent(), child);
+        let updated = index.without_paths(&std::collections::HashSet::from([matching[0]
+            .path()
+            .display()
+            .to_owned()]));
+        assert!(updated.directory_entries(child).is_empty());
+        assert_eq!(updated.directory_entries(root)[0].logical_size, 0);
+    }
+
+    #[test]
+    fn directory_filter_searches_beyond_the_current_page() {
+        let index = populated_directory_index(100);
+        let page = index.directory_page(index.root_directory_id(), 0, 80, Some("file-099"));
+        assert_eq!(page.total, 1);
+        assert_eq!(page.entries[0].name, "file-099.bin");
+    }
+
+    #[test]
+    fn directory_page_clamps_limits() {
+        let index = populated_directory_index(100);
+        assert_eq!(
+            index
+                .directory_page(index.root_directory_id(), 0, 0, None)
+                .entries
+                .len(),
+            1
+        );
+        assert_eq!(
+            index
+                .directory_page(index.root_directory_id(), 0, 999, None)
+                .entries
+                .len(),
+            80
+        );
+    }
+
+    #[test]
+    fn removed_paths_disappear_from_queries_and_accounting() {
+        let index = populated_directory_index(3);
+        let removed = std::collections::HashSet::from([r"C:\Fixture\file-001.bin".to_owned()]);
+        let updated = index.without_paths(&removed);
+        let page = updated.directory_page(updated.root_directory_id(), 0, 80, None);
+        assert_eq!(page.total, 2);
+        assert!(
+            page.entries
+                .iter()
+                .all(|entry| !removed.contains(entry.path.display()))
+        );
+        assert_eq!(
+            updated
+                .directory(updated.root_directory_id())
+                .unwrap()
+                .logical_size(),
+            4
+        );
+        assert_eq!(
+            index
+                .directory_page(index.root_directory_id(), 0, 80, None)
+                .total,
+            3
+        );
+    }
+
+    #[test]
+    fn files_under_is_limited_and_largest_first() {
+        let index = populated_directory_index(100);
+        let files = index.files_under(index.root_directory_id(), 3);
+        assert_eq!(files.len(), 3);
+        assert_eq!(
+            files
+                .iter()
+                .map(FileRecord::logical_size)
+                .collect::<Vec<_>>(),
+            vec![100, 99, 98]
+        );
     }
 }

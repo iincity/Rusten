@@ -34,15 +34,15 @@ pub fn find_duplicate_groups_with_progress(
         .filter(|files| files.len() > 1)
         .map(Vec::len)
         .sum::<usize>();
-    let mut fast_processed = 0;
+    let mut fast_processed = 0_usize;
     for (size, candidates) in by_size.into_iter().filter(|(_, files)| files.len() > 1) {
         for file in candidates {
             if let Some(hash) = fast_hash(file) {
                 by_fast.entry((size, hash)).or_default().push(file);
             }
             fast_processed += 1;
-            if fast_candidates > 0 {
-                progress(10 + (fast_processed * 40 / fast_candidates).min(40) as u8);
+            if let Some(percent) = (fast_processed * 40).checked_div(fast_candidates) {
+                progress(10 + percent.min(40) as u8);
             }
         }
     }
@@ -52,15 +52,15 @@ pub fn find_duplicate_groups_with_progress(
         .filter(|files| files.len() > 1)
         .map(Vec::len)
         .sum::<usize>();
-    let mut strong_processed = 0;
+    let mut strong_processed = 0_usize;
     for ((size, _), candidates) in by_fast.into_iter().filter(|(_, files)| files.len() > 1) {
         for file in candidates {
             if let Some(hash) = strong_hash(file) {
                 by_strong.entry((size, hash)).or_default().push(file);
             }
             strong_processed += 1;
-            if strong_candidates > 0 {
-                progress(50 + (strong_processed * 45 / strong_candidates).min(45) as u8);
+            if let Some(percent) = (strong_processed * 45).checked_div(strong_candidates) {
+                progress(50 + percent.min(45) as u8);
             }
         }
     }

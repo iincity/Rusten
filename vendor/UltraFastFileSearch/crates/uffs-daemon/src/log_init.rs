@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 SKY, LLC.
+
+//! Tracing-subscriber bootstrap for the daemon.
+//!
+//! Extracted from `lib.rs` so the daemon's startup graph + `spawn_*`
+//! cluster can stay focused on lifecycle wiring without the log-file
+//! parent-directory normalisation noise.  No collision risk with the
+//! `tracing` crate because the module is named `log_init`.
+
+use std::path::PathBuf;
+
+/// Default log file location: `<native-log-dir>/uffsd.log`.
+///
+/// The directory is the shared per-platform native log location resolved
+/// by [`uffs_security::log_dir::log_dir`] (macOS `~/Library/Logs/uffs`,
+/// Windows `%LOCALAPPDATA%\uffs\logs`, Linux `$XDG_STATE_HOME/uffs/logs`),
+/// overridable via `UFFS_LOG_DIR`.  When that resolution falls back to a
+/// relative `logs` (no home dir), the parent-dir normalisation in
+/// [`init_tracing`] still produces a usable `logs/uffsd.log`.
+#[must_use]
+pub(crate) fn default_log_file() -> PathBuf {
+    uffs_security::log_dir::log_dir().join("uffsd.log")
+}
+
+/// Daily log files kept before the oldest is pruned.
+///
+/// A week of history is enough to investigate an incident reported the
+/// morning after a weekend, and short enough that the logs cannot quietly
+/// consume a disk.
+const KEPT_LOG_FILES: usize = 7;
+
+/// Initialise tracing for the daemon process.
+///
+/// * `log_file = Some(path)` — write to that file (append mode). A path of
+///   `"-"` or empty string uses `default_log_file`.
+/// * `log_file = None` **and** the effective log level is `debug` or `trace` —
+///   automatically write to `default_log_file` so that diagnostic output is
+///   never lost to `/dev/null`.
+/// * `log_file = None` with a higher level — write to stdout.
+///
+/// Returns a guard that **must** be held until the daemon exits —
+/// dropping it flushes the non-blocking writer.
+#[must_use]
+#[expect(
+    clippy::print_stderr,
+    reason = "WI-6.2: log-dir create failure must surface before tracing is up; stderr is the only honest channel"
+)]
+pub fn init_tracing(
+    log_spec: &str,
+    log_file: Option<&std::path::Path>,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let filter = tracing_subscriber::EnvFilter::try_new(log_spec)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // Decide whether to use a file writer.
+    let is_verbose = {
+        let lower = log_spec.to_ascii_lowercase();
+        lower.contains("debug") || lower.contains("trace")
+    };
+    let effective_file: Option<PathBuf> = match log_file {
+        Some(path) => {
+            let resolved = if path.as_os_str().is_empty() || path == std::path::Path::new("-") {
+                default_log_file()
+            } else {
+                path.to_path_buf()
+            };
+            Some(resolved)
+        }
+        None if is_verbose => Some(default_log_file()),
+        None => None,
+    };
+
+    if let Some(resolved) = effective_file {
+        // Compute a *safe* parent directory.
+        //
+        // `PathBuf::from("uffsd.log").parent()` returns `Some(Path::new(""))`,
+        // not `None` — so the defensive `unwrap_or_else(|| Path::new("."))`
+        // below used to never fire for a relative file name, and
+        // `tracing_appender::rolling::never("", "uffsd.log")` would propagate
+        // the empty path through `create_dir_all("")`, which errors on
+        // Windows ("The system cannot find the path specified") and then
+        // panics via `.expect("initializing rolling file appender failed")`
+        // — killing the detached daemon before it ever binds IPC.
+        //
+        // Coerce both `None` and `Some("")` to the current directory so
+        // relative `--log-file` paths work the same everywhere.
+        let parent_dir = match resolved.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => std::path::Path::new("."),
+        };
+        // WI-6.2: if the log dir can't be created, surface it once on stderr
+        // (tracing isn't up yet) and DEGRADE to stdout logging. We must NOT
+        // fall through to `rolling::never(parent_dir, …)` in that case —
+        // that constructor PANICS when the parent directory is absent
+        // (tracing-appender rolling.rs), which would kill the detached
+        // daemon before it binds IPC.
+        if let Err(err) = std::fs::create_dir_all(parent_dir) {
+            eprintln!(
+                "uffsd: could not create log dir {} ({err}); falling back to stdout logging",
+                parent_dir.display()
+            );
+            let _ignore = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .try_init();
+            return None;
+        }
+
+        // Daily rotation with bounded retention — NOT `rolling::never`.
+        //
+        // `never` is append-forever with no size cap and no retention. One
+        // production `uffsd.log` reached **305 MB** that way. The dominant
+        // source of that volume is fixed at the source (the MFT-layout INFO
+        // that fired on every USN poll — see `io::extent_map::MftExtentMap`),
+        // but an unbounded log is a standing hazard regardless of what is
+        // writing to it: the daemon runs for weeks and nothing ever truncates.
+        //
+        // The caller's directory and file stem are preserved, so a
+        // `--log-file /var/log/uffsd.log` becomes `/var/log/uffsd.<date>.log`.
+        let stem = resolved
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("uffsd");
+        let extension = resolved
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("log");
+        let built = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(stem)
+            .filename_suffix(extension)
+            .max_log_files(KEPT_LOG_FILES)
+            .build(parent_dir);
+        let Ok(file_appender) = built else {
+            eprintln!(
+                "uffsd: could not open a rolling log in {}; falling back to stdout logging",
+                parent_dir.display()
+            );
+            let _ignore = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_target(false)
+                .try_init();
+            return None;
+        };
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        // `try_init` — a subscriber may already exist when invoked via
+        // the embedded `uffs --daemon run` path.
+        let _ignore = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(non_blocking)
+            .try_init();
+        Some(guard)
+    } else {
+        let _ignore = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WI-6.2: when the log dir cannot be created (its parent is a regular
+    /// file), `init_tracing` must degrade gracefully — return without
+    /// panicking so daemon startup continues — rather than aborting. The
+    /// stderr diagnostic itself is emitted via `eprintln!` (covered by the
+    /// scoped `print_stderr` expect); here we assert the no-panic degrade.
+    #[test]
+    fn init_tracing_degrades_when_log_dir_uncreatable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A regular file where a directory component is expected, so
+        // create_dir_all(parent) fails.
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").expect("write blocker file");
+        let bogus_log = blocker.join("sub").join("uffsd.log");
+
+        // Must not panic. With an uncreatable log dir, init degrades to
+        // stdout logging and returns None (no file guard) — proving the
+        // daemon would continue startup rather than crash in the rolling
+        // appender constructor.
+        let guard = init_tracing("info", Some(&bogus_log));
+        assert!(
+            guard.is_none(),
+            "uncreatable log dir must degrade to stdout (None), not a file guard"
+        );
+    }
+}

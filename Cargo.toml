@@ -14,12 +14,12 @@ members = [
     "apps/cleaner-cli",
 ]
 default-members = ["apps/cleaner-ui", "apps/admin-helper"]
-exclude = ["vendor/UltraFastFileSearch"]
+exclude = ["vendor/UltraFastFileSearch", "vendor/rusten-uffs-mft", "vendor/nsh-platform-windows"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 
 [workspace.dependencies]
@@ -31,9 +31,45 @@ sha2 = "0.10.9"
 ed25519-dalek = "2.2.0"
 ring = "0.17.14"
 toml = "0.8.23"
-gpui = "0.2.2"
-gpui-component = "0.3.0"
+nsh-core = "=0.3.0"
+nsh-base = { git = "https://github.com/longbridge/nsh.git", tag = "v0.3.0", default-features = false }
+nsh-platform-windows = { git = "https://github.com/longbridge/nsh.git", tag = "v0.3.0", default-features = false }
+nsh-engine = { git = "https://github.com/longbridge/nsh.git", tag = "v0.3.0", default-features = false }
+nsh-testing = { git = "https://github.com/longbridge/nsh.git", tag = "v0.3.0", default-features = false }
+log = "0.4"
 platform-windows = { path = "crates/platform-windows" }
 persistence = { path = "crates/persistence" }
 policy = { path = "crates/policy" }
 audit = { path = "crates/audit" }
+
+[patch.crates-io]
+nsh-core = { git = "https://github.com/longbridge/nsh.git", tag = "v0.3.0" }
+
+[patch."https://github.com/longbridge/nsh.git"]
+nsh-platform-windows = { path = "vendor/nsh-platform-windows" }
+
+# Full-disk scans must remain usable with the documented cargo run command.
+[profile.dev.package.domain]
+opt-level = 2
+
+[profile.dev.package.platform-windows]
+opt-level = 2
+
+[profile.dev.package.cleaner-ui]
+opt-level = 2
+
+[profile.dev.package.uffs-mft]
+opt-level = 2
+
+# The encrypted MFT cache processes tens of MiB on every scan.
+[profile.dev.package.uffs-security]
+opt-level = 2
+
+[profile.dev.package.aes]
+opt-level = 2
+
+[profile.dev.package.ghash]
+opt-level = 2
+
+[profile.dev.package.polyval]
+opt-level = 2

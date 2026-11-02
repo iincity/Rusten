@@ -1,6 +1,10 @@
 # Rusten
 
-Rusten 是 Windows C 盘空间分析与可恢复清理工具。MVP 默认离线，普通用户进程负责扫描和界面，管理员助手只处理登记的系统操作。
+Rusten 是 Windows C 盘空间分析与清理工具。默认离线，普通用户进程负责扫描和界面，管理员助手只处理登记的系统操作。
+
+运行 `cargo run --bin cleaner-ui` 启动原生 NSH 界面并自动扫描。点击“立即清理”或“清理所选项目”直接执行当前选项，不再弹出二次确认；执行前仍复核文件身份、权限和安全规则。当前 UI 不提供文件恢复，也不为清理文件建立备份副本。默认淡绿色主题，可切换明亮和暗黑主题。
+
+当前功能约定及评审证据见 [需求差距评审](docs/testing/requirements-review-2026-11-02.md)。历史设计中与此冲突的恢复、备份、二次确认和单一暗色要求已被后续用户要求取代。
 
 ## 架构
 
@@ -8,7 +12,7 @@ Rusten 是 Windows C 盘空间分析与可恢复清理工具。MVP 默认离线�
 - `application`：扫描编排、清理计划、执行复核和恢复端口；
 - `platform-windows`：NTFS/Windows API、Shell 回收站和管理员客户端；
 - `persistence`：配置、操作日志、备份索引和报告文件；
-- `apps/cleaner-ui`：GPUI 主界面；
+- `apps/cleaner-ui`：原生 NSH 主界面；
 - `apps/cleaner-cli`：离线扫描、规则预览、报告导出和策略导入命令；
 - `apps/admin-helper`：按需启动、处理一个请求后退出的提权助手。
 - `FastFileScanner`：统一扫描入口；默认使用固定提交的 UFFS MFT 驱动，权限、卷或索引失败时回退现有 Win32 枚举器。

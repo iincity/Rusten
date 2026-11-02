@@ -65,17 +65,11 @@ pub struct CleanupViewState {
     pub selected_categories: std::collections::BTreeSet<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RecoveryViewState {
-    pub recoverable_count: usize,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppState {
     pub scan: ScanViewState,
     pub selected_view: ViewId,
     pub cleanup: CleanupViewState,
-    pub recovery: RecoveryViewState,
     pub scan_error: Option<String>,
 }
 
@@ -85,7 +79,6 @@ impl Default for AppState {
             scan: ScanViewState::default(),
             selected_view: ViewId::Home,
             cleanup: CleanupViewState::default(),
-            recovery: RecoveryViewState::default(),
             scan_error: None,
         }
     }
@@ -121,12 +114,18 @@ impl AppState {
         let selected = self.cleanup.selected_categories.clone();
         for category in &mut self.cleanup.categories {
             if selected.contains(&category.key) {
-                category.executable_bytes = by_category.get(&category.key).copied();
+                category.executable_bytes = by_category
+                    .get(&category.key)
+                    .copied()
+                    .or_else(|| (category.count > 0).then_some(category.estimated_bytes));
             }
         }
-        self.cleanup
-            .selected_categories
-            .retain(|key| by_category.contains_key(key));
+        self.cleanup.selected_categories.retain(|key| {
+            self.cleanup
+                .categories
+                .iter()
+                .any(|category| &category.key == key && category.executable_bytes.is_some())
+        });
     }
 
     pub fn apply_report(&mut self, report: &ScanReport) {
@@ -140,7 +139,11 @@ impl AppState {
         self.scan.phase = ScanPhase::Finalizing;
         self.scan.files = report.files;
         self.scan.discovered_bytes = report.logical_bytes;
-        self.scan.progress_percent = 100;
+        self.scan.progress_percent = if report.status == domain::ScanStatus::Complete {
+            100
+        } else {
+            self.scan.progress_percent.min(99)
+        };
         self.scan.current_path = None;
         self.scan.warnings = report.warnings;
         self.scan.total_bytes = report.total_bytes;
@@ -170,7 +173,12 @@ impl AppState {
     }
 
     pub fn apply_progress(&mut self, progress: &ScanProgress) {
-        self.scan.status = ScanViewStatus::Scanning;
+        if !matches!(
+            self.scan.status,
+            ScanViewStatus::Paused | ScanViewStatus::Canceled
+        ) {
+            self.scan.status = ScanViewStatus::Scanning;
+        }
         self.scan.engine = progress.engine;
         self.scan.phase = progress.phase;
         self.scan.files = progress.files;
@@ -196,6 +204,7 @@ impl AppState {
 
     pub fn apply(&mut self, command: UiCommand) {
         match command {
+            UiCommand::Analysis(_) => {}
             UiCommand::Navigate(view) => self.selected_view = view,
             UiCommand::StartScan => {
                 self.scan.status = ScanViewStatus::Scanning;
@@ -233,7 +242,6 @@ impl AppState {
             }
             UiCommand::CancelScan => self.scan.status = ScanViewStatus::Canceled,
             UiCommand::CreateQuickCleanPreview => self.selected_view = ViewId::Cleanup,
-            UiCommand::RestoreOperation(_) => self.selected_view = ViewId::Recovery,
             UiCommand::ToggleCleanupCategory(category) => {
                 if !self.cleanup.selected_categories.remove(&category) {
                     self.cleanup.selected_categories.insert(category);
@@ -245,13 +253,21 @@ impl AppState {
             UiCommand::ToggleDirectorySelection(_) => {}
             UiCommand::OpenAnalysisDirectory(_) | UiCommand::OpenAnalysisParent => {}
             UiCommand::ToggleLargeFileSelection(_) => {}
-            UiCommand::ToggleAutoClean | UiCommand::ToggleBackup => {}
-            UiCommand::PurgeExpiredRecovery => {}
+            UiCommand::SetTheme(_) => {}
             UiCommand::ExecuteCleanup(_)
             | UiCommand::ConfirmCleanup
             | UiCommand::CancelCleanup
             | UiCommand::StopCleanup
-            | UiCommand::PauseScan => {}
+            | UiCommand::PauseScan
+            | UiCommand::SetLargeFilePage(_)
+            | UiCommand::SetLargeFileThreshold(_) => {}
+            UiCommand::RevealFile(_) => {}
+            UiCommand::SetConfirmationPage(_) => {}
+            UiCommand::RequestCancelScan
+            | UiCommand::DismissCancelScan
+            | UiCommand::RequestExit
+            | UiCommand::ConfirmExit
+            | UiCommand::CancelExit => {}
         }
     }
 }
@@ -269,9 +285,9 @@ mod tests {
     #[test]
     fn commands_and_events_update_rendered_state() {
         let mut state = AppState::default();
-        state.apply(UiCommand::Navigate(ViewId::Recovery));
+        state.apply(UiCommand::Navigate(ViewId::Settings));
         state.apply(UiCommand::StartScan);
-        assert_eq!(state.selected_view, ViewId::Recovery);
+        assert_eq!(state.selected_view, ViewId::Settings);
         assert_eq!(state.scan.status, ScanViewStatus::Scanning);
 
         state.apply(UiCommand::CancelScan);
@@ -293,6 +309,40 @@ mod tests {
         });
 
         assert_eq!(state.scan.progress_percent, 37);
+        state.scan.status = ScanViewStatus::Paused;
+        state.apply_progress(&ScanProgress {
+            engine: ScanEngine::Win32,
+            phase: ScanPhase::Enumerating,
+            files: 43,
+            logical_bytes: 101,
+            warnings: 0,
+            progress_percent: 38,
+            current_path: None,
+            categories: Vec::new(),
+        });
+        assert_eq!(state.scan.status, ScanViewStatus::Paused);
+    }
+
+    #[test]
+    fn partial_and_canceled_reports_do_not_claim_full_progress() {
+        for status in [ScanStatus::Partial, ScanStatus::Canceled] {
+            let mut state = AppState::default();
+            state.scan.progress_percent = 37;
+            state.apply_report(&ScanReport {
+                index: ScanIndex::new(normalize_path(r"C:\").unwrap()),
+                engine: ScanEngine::Win32,
+                status,
+                files: 1,
+                logical_bytes: 42,
+                candidate_count: 0,
+                estimated_bytes: 0,
+                warnings: 0,
+                total_bytes: 100,
+                available_bytes: 50,
+                categories: Vec::new(),
+            });
+            assert_eq!(state.scan.progress_percent, 37);
+        }
     }
 
     #[test]
@@ -402,7 +452,7 @@ mod tests {
                 group_order: 1,
                 name: key.into(),
                 display_order: 1,
-                count: 1,
+                count: u64::from(key != "deleted"),
                 estimated_bytes: 10,
                 executable_bytes: Some(10),
             })

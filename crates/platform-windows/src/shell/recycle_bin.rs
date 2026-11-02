@@ -22,11 +22,12 @@ pub fn query_current_user_stats() -> Result<RecycleBinStats, String> {
             i64NumItems: 0,
         };
         let result = unsafe { SHQueryRecycleBinW(std::ptr::null(), &mut info) };
-        if result < 0 {
-            return Err(format!("SHQueryRecycleBinW failed: {result}"));
-        }
-        let shell = stats_from_raw(info.i64Size, info.i64NumItems)?;
-        Ok(merge_stats(shell, physical_recycle_bin_stats()?))
+        let shell = if result < 0 {
+            Err(format!("SHQueryRecycleBinW failed: {result}"))
+        } else {
+            stats_from_raw(info.i64Size, info.i64NumItems)
+        };
+        available_stats(shell, physical_recycle_bin_stats())
     }
     #[cfg(not(windows))]
     {
@@ -53,17 +54,36 @@ pub fn empty_current_user() -> Result<u64, String> {
                 SHERB_NOCONFIRMATION | SHERB_NOSOUND | SHERB_NOPROGRESSUI,
             )
         };
-        if result < 0 {
-            return Err(format!("SHEmptyRecycleBinW failed: {result}"));
-        }
-        for directory in current_user_recycle_bin_dirs()? {
-            remove_recycle_entries(&directory)?;
-        }
+        // Shell can fail on an empty/offline volume while other volumes still hold items.
+        remove_recycle_directories(result, &current_user_recycle_bin_dirs()?)?;
         cleared_bytes(before, query_current_user_stats()?)
     }
     #[cfg(not(windows))]
     {
         Err("recycle bin requires Windows".into())
+    }
+}
+
+fn remove_recycle_directories(
+    shell_result: i32,
+    directories: &[std::path::PathBuf],
+) -> Result<(), String> {
+    for directory in directories {
+        remove_recycle_entries(directory).map_err(|error| {
+            format!("recycle-bin cleanup failed (Shell HRESULT {shell_result}): {error}")
+        })?;
+    }
+    Ok(())
+}
+
+fn available_stats(
+    shell: Result<RecycleBinStats, String>,
+    physical: Result<RecycleBinStats, String>,
+) -> Result<RecycleBinStats, String> {
+    match (shell, physical) {
+        (Ok(shell), Ok(physical)) => Ok(merge_stats(shell, physical)),
+        (Err(_), Ok(physical)) => Ok(physical),
+        (_, Err(error)) => Err(error),
     }
 }
 
@@ -262,9 +282,7 @@ pub fn move_to_recycle_bin(path: &NormalizedPath) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RecycleBinStats, cleared_bytes, merge_stats, remove_recycle_entries, stats_from_raw,
-    };
+    use super::{RecycleBinStats, cleared_bytes, merge_stats, stats_from_raw};
 
     #[test]
     fn converts_recycle_bin_size_and_count() {
@@ -317,6 +335,19 @@ mod tests {
     }
 
     #[test]
+    fn physical_entries_keep_recycle_bin_actionable_when_shell_query_fails() {
+        let physical = RecycleBinStats {
+            item_count: 2,
+            bytes: 123,
+        };
+        assert_eq!(
+            super::available_stats(Err("Shell unavailable".into()), Ok(physical)),
+            Ok(physical)
+        );
+        assert!(super::available_stats(Ok(physical), Err("access denied".into())).is_err());
+    }
+
+    #[test]
     fn fallback_removes_every_counted_recycle_entry() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("$Rfile.bin"), b"garbage").unwrap();
@@ -326,7 +357,8 @@ mod tests {
         std::fs::write(root.path().join("$Other"), b"unrelated").unwrap();
         std::fs::write(root.path().join("keep.txt"), b"unrelated").unwrap();
 
-        remove_recycle_entries(root.path()).unwrap();
+        // A failed Shell call must still reach the physical cleanup on every volume.
+        super::remove_recycle_directories(-2147467259, &[root.path().to_owned()]).unwrap();
 
         assert!(!root.path().join("$Rfile.bin").exists());
         assert!(!root.path().join("$Ifile.bin").exists());

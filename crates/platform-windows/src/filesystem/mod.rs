@@ -44,8 +44,19 @@ pub fn enumerate_statistics_files(
     roots: &[NormalizedPath],
     max_entries: u64,
 ) -> Result<Vec<FileRecord>, PlatformError> {
+    enumerate_statistics_files_with_cancel(roots, max_entries, &CancellationToken::default())
+}
+
+fn enumerate_statistics_files_with_cancel(
+    roots: &[NormalizedPath],
+    max_entries: u64,
+    cancel: &CancellationToken,
+) -> Result<Vec<FileRecord>, PlatformError> {
     let mut files = Vec::new();
     for root in roots {
+        if cancel.is_cancelled() {
+            break;
+        }
         if fs::metadata(root.display()).is_ok_and(|metadata| metadata.is_file()) {
             let metadata = read_metadata(root)?;
             let index = ScanIndex::new(root.clone());
@@ -61,6 +72,7 @@ pub fn enumerate_statistics_files(
         let (sender, receiver) = std::sync::mpsc::sync_channel(1024);
         let worker = std::thread::spawn({
             let root = root.clone();
+            let cancel = cancel.clone();
             move || {
                 WindowsFileScanner.scan(
                     root,
@@ -70,7 +82,7 @@ pub fn enumerate_statistics_files(
                         collect_lock_state: false,
                     },
                     sender,
-                    CancellationToken::default(),
+                    cancel,
                 )
             }
         });
@@ -116,8 +128,23 @@ pub fn enumerate_statistics_files_for_patterns(
     patterns: &[String],
     max_entries: u64,
 ) -> Result<Vec<FileRecord>, PlatformError> {
+    enumerate_statistics_files_for_patterns_with_cancel(
+        patterns,
+        max_entries,
+        &CancellationToken::default(),
+    )
+}
+
+pub fn enumerate_statistics_files_for_patterns_with_cancel(
+    patterns: &[String],
+    max_entries: u64,
+    cancel: &CancellationToken,
+) -> Result<Vec<FileRecord>, PlatformError> {
     let mut roots = Vec::new();
     for pattern in patterns {
+        if cancel.is_cancelled() {
+            return Ok(Vec::new());
+        }
         for root in statistics_roots_for_pattern(pattern) {
             let key = root.display().to_ascii_lowercase();
             if !roots
@@ -136,7 +163,7 @@ pub fn enumerate_statistics_files_for_patterns(
     if roots
         .iter()
         .all(|root| root.display().to_ascii_lowercase().starts_with(r"c:\"))
-        && let Ok(files) = enumerate_statistics_files_for_patterns_uffs(&roots, max_entries)
+        && let Ok(files) = enumerate_statistics_files_for_patterns_uffs(&roots, max_entries, cancel)
     {
         return Ok(files);
     }
@@ -160,8 +187,12 @@ pub fn enumerate_statistics_files_for_patterns(
                     batch
                         .into_iter()
                         .filter_map(|root| {
-                            enumerate_statistics_files(std::slice::from_ref(&root), max_entries)
-                                .ok()
+                            enumerate_statistics_files_with_cancel(
+                                std::slice::from_ref(&root),
+                                max_entries,
+                                cancel,
+                            )
+                            .ok()
                         })
                         .flatten()
                         .collect::<Vec<_>>()
@@ -240,6 +271,7 @@ fn statistics_roots_for_pattern(pattern: &str) -> Vec<NormalizedPath> {
 fn enumerate_statistics_files_for_patterns_uffs(
     roots: &[NormalizedPath],
     max_entries: u64,
+    cancel: &CancellationToken,
 ) -> Result<Vec<FileRecord>, PlatformError> {
     let root = normalize_path(r"C:\").expect("static C drive root is normalized");
     let volume_serial = read_metadata(&root)?.identity().volume_serial;
@@ -268,6 +300,9 @@ fn enumerate_statistics_files_for_patterns_uffs(
     let mut seen = HashSet::new();
 
     for (record_index, is_dir) in root_matches {
+        if cancel.is_cancelled() {
+            break;
+        }
         collect_uffs_statistics_files(
             &index,
             &resolver,
@@ -278,6 +313,7 @@ fn enumerate_statistics_files_for_patterns_uffs(
             max_entries,
             &mut seen,
             &mut files,
+            cancel,
         );
         if files.len() as u64 >= max_entries {
             break;
@@ -301,8 +337,12 @@ fn collect_uffs_statistics_files(
     max_entries: u64,
     seen: &mut HashSet<FileIdentity>,
     files: &mut Vec<FileRecord>,
+    cancel: &CancellationToken,
 ) {
-    if files.len() as u64 >= max_entries || !resolver.is_valid_idx(record_index) {
+    if cancel.is_cancelled()
+        || files.len() as u64 >= max_entries
+        || !resolver.is_valid_idx(record_index)
+    {
         return;
     }
     let Some(source) = index.records.get(record_index) else {
@@ -311,12 +351,25 @@ fn collect_uffs_statistics_files(
     if source.is_deleted() || source.is_corrupt() || source.is_extension() {
         return;
     }
+    let identity = FileIdentity {
+        volume_serial,
+        file_index: ntfs_file_index(source.frs.raw(), source.sequence_number),
+    };
+    if !seen.insert(identity) {
+        return;
+    }
     if source.is_directory() {
         if !include_descendants || source.reparse_tag != 0 {
             return;
         }
         let mut child_entry = source.first_child;
-        while child_entry != uffs_mft::index::NO_ENTRY && (files.len() as u64) < max_entries {
+        let mut remaining_links = index.children.len();
+        while !cancel.is_cancelled()
+            && child_entry != uffs_mft::index::NO_ENTRY
+            && (files.len() as u64) < max_entries
+            && remaining_links > 0
+        {
+            remaining_links -= 1;
             let Some(child) = index.children.get(child_entry as usize) else {
                 break;
             };
@@ -331,6 +384,7 @@ fn collect_uffs_statistics_files(
                     max_entries,
                     seen,
                     files,
+                    cancel,
                 );
             }
             child_entry = child.next_entry;
@@ -338,13 +392,6 @@ fn collect_uffs_statistics_files(
         return;
     }
 
-    let identity = FileIdentity {
-        volume_serial,
-        file_index: ntfs_file_index(source.frs.raw(), source.sequence_number),
-    };
-    if !seen.insert(identity) {
-        return;
-    }
     let path = resolver.materialize_path_cached(index, record_index, &[]);
     let Ok(path) = normalize_path(&path) else {
         return;
@@ -381,11 +428,7 @@ fn ntfs_file_index(record_number: u64, sequence_number: u16) -> u128 {
 }
 
 fn join_windows_path(base: &str, component: &str) -> String {
-    if base.ends_with(':') {
-        format!("{base}\\{component}")
-    } else {
-        format!(r"{base}\{component}")
-    }
+    format!(r"{base}\{component}")
 }
 
 fn component_matches(pattern: &str, value: &str) -> bool {
@@ -720,6 +763,64 @@ pub(crate) fn receiver_closed() -> PlatformError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "uffs")]
+    #[test]
+    fn supplemental_statistics_terminates_directory_and_child_link_cycles() {
+        use uffs_mft::{
+            frs::Frs,
+            index::{ChildInfo, FileRecord, MftIndex, NO_ENTRY, PathResolver},
+            platform::DriveLetter,
+        };
+        let mut index = MftIndex::new(DriveLetter::C);
+        for frs in [5, 6, 7] {
+            let mut record = FileRecord::new(Frs::new(frs));
+            record.stdinfo.set_directory(frs != 7);
+            record.first_name.parent_frs = Frs::new(5).into();
+            index.records.push(record);
+        }
+        index.frs_to_idx = vec![NO_ENTRY; 8];
+        for (idx, frs) in [5, 6, 7].into_iter().enumerate() {
+            index.frs_to_idx[frs] = idx as u32;
+        }
+        index.records[0].first_child = 0;
+        index.records[1].first_child = 1;
+        index.records[2].first_stream.size.length = 1234;
+        index.children = vec![
+            ChildInfo {
+                child_frs: Frs::new(6),
+                next_entry: 2,
+                ..Default::default()
+            },
+            ChildInfo {
+                child_frs: Frs::new(5),
+                next_entry: NO_ENTRY,
+                ..Default::default()
+            },
+            ChildInfo {
+                child_frs: Frs::new(7),
+                next_entry: 2,
+                ..Default::default()
+            },
+        ];
+        let resolver = PathResolver::build(&index, true);
+        assert!(resolver.is_valid_idx(0));
+        let mut files = Vec::new();
+        super::collect_uffs_statistics_files(
+            &index,
+            &resolver,
+            0,
+            true,
+            1,
+            domain::ScanIndex::new(domain::normalize_path(r"C:\").unwrap()).root_directory_id(),
+            100,
+            &mut std::collections::HashSet::new(),
+            &mut files,
+            &super::CancellationToken::default(),
+        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].logical_size(), 1234);
+    }
+
     use windows_sys::Win32::Foundation::{
         ERROR_ACCESS_DENIED, ERROR_CANT_RESOLVE_FILENAME, ERROR_FILENAME_EXCED_RANGE,
         ERROR_NOT_READY, ERROR_PATH_NOT_FOUND,

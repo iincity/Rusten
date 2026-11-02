@@ -3,19 +3,10 @@ use std::path::{Path, PathBuf};
 use application::ConfigService;
 use persistence::ConfigStore;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SettingsModel {
     pub auto_clean: bool,
-    pub backup_enabled: bool,
-}
-
-impl Default for SettingsModel {
-    fn default() -> Self {
-        Self {
-            auto_clean: false,
-            backup_enabled: true,
-        }
-    }
+    pub theme: crate::theme::ThemeMode,
 }
 
 impl SettingsModel {
@@ -26,7 +17,7 @@ impl SettingsModel {
                 let config = ConfigService::load_toml(&contents).config;
                 Self {
                     auto_clean: config.auto_clean,
-                    backup_enabled: config.backup_enabled,
+                    theme: crate::theme::ThemeMode::from_key(&config.theme),
                 }
             })
             .unwrap_or_default()
@@ -38,7 +29,7 @@ impl SettingsModel {
             .map(|contents| ConfigService::load_toml(&contents).config)
             .unwrap_or_default();
         config.auto_clean = self.auto_clean;
-        config.backup_enabled = self.backup_enabled;
+        config.theme = self.theme.key().to_owned();
         let contents = ConfigService::serialize(&config)?;
         ConfigStore::write(path, &contents).map_err(|error| error.to_string())
     }
@@ -62,7 +53,6 @@ mod tests {
             std::env::temp_dir().join(format!("rusten-settings-test-{}.toml", std::process::id()));
         let mut settings = SettingsModel::load_from(&path);
         settings.auto_clean = true;
-        settings.backup_enabled = false;
         settings.save_to(&path).unwrap();
 
         assert_eq!(SettingsModel::load_from(&path), settings);
@@ -82,7 +72,7 @@ mod tests {
         ConfigStore::write(&path, &ConfigService::serialize(&config).unwrap()).unwrap();
         let settings = SettingsModel {
             auto_clean: true,
-            backup_enabled: false,
+            theme: crate::theme::ThemeMode::Dark,
         };
         settings.save_to(&path).unwrap();
         let loaded = ConfigService::load_toml(&ConfigStore::read(&path).unwrap()).config;

@@ -1,0 +1,856 @@
+cargo-features = [
+  "panic-immediate-abort",
+] # ship profile only (needs -Z build-std)
+
+# =============================================================================
+# Cargo.toml - UFFS (Ultra Fast File Search) Workspace
+# =============================================================================
+#
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+#
+# UFFS - Ultra Fast File Search
+# Ultra-high-performance file search using direct MFT reading and Polars
+# DataFrames for blazing-fast queries.
+# Contact: 50460704+githubrobbi@users.noreply.github.com for licensing inquiries
+#
+# Last Updated: April 2026 - Nightly (1.96+) / Edition 2024
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workspace Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+[workspace]
+resolver = "3"
+members = [
+  # ── Foundation ──
+  "crates/uffs-polars",          # 🚀 Polars facade (compilation isolation)
+  "crates/uffs-security",        # 🔒 Crypto, key storage, secure FS ops
+  "crates/uffs-text",            # 📝 Unicode text processing, i18n foundation
+  "crates/uffs-time",            # ⏱️ NTFS FILETIME arithmetic (pure, zero deps)
+  "crates/uffs-version",         # 🏷️ Shared --version strings + build-metadata stamp (leaf)
+  "crates/uffs-statusfmt",       # 🎨 Shared operator-status styling (color, glyphs, fields) (leaf)
+  "crates/uffs-broker-protocol", # 📟 Cross-platform broker wire-protocol types (F5)
+  "crates/uffs-winsvc",          # 🪟 Native Windows service control + broker-pipe probe (leaf)
+  "crates/uffs-fetch",           # 🌐 Hardened HTTP fetch + SHA-256 verify (public lib, leaf)
+  "crates/uffs-mft",             # 📦 MFT reading → Polars DataFrame
+  "crates/uffs-format",          # 🧾 Shared CSV formatter (daemon + thin CLI)
+  "crates/uffs-core",            # 🎯 Query engine + compact search engine
+  # ── Daemon Architecture ──
+  "crates/uffs-daemon",        # 🛡️ Background service process
+  "crates/uffs-client",        # 📡 Thin client library
+  "crates/uffs-mcp",           # 🤖 MCP stdio adapter for AI agents
+  "crates/uffs-broker",        # 🔑 Windows elevated handle broker (optional)
+  "crates/uffs-vss-requestor", # 🩹 Per-run native VSS snapshot helper, spawned by uffs-broker (optional)
+  # ── Surfaces ──
+  "crates/uffs-cli",      # 🖥️  Command-line interface
+  "crates/uffs-update",   # ⬆️  Self-update acquire helper (HTTP/TLS isolated from the CLI)
+  "crates/uffs-watchdog", # 🐕 User-level supervisor for the resident daemon + MCP
+  # NOTE: uffs-tui and uffs-gui have moved to the private uffs-products repo.
+  # ── Tools ──
+  "crates/uffs-diag",               # 🔬 Retained workspace-only diagnostic tools (not shipped in dist/)
+  "crates/uffs-bench",              # 📊 Benchmark-suite orchestrator (robust-benchmark-flow-*.md)
+  "scripts/ci-pipeline",            # 🛠️ Promoted CI pipeline driver (dev-flow-implementation-plan.md § 7)
+  "scripts/ci/uffs-gen-hooks",      # 🧬 Gate-manifest hook generator (gates-manifest-plan.md Phase 2)
+  "scripts/ci/uffs-gen-workflow",   # 🧪 Gate-manifest workflow structural validator (gates-manifest-plan.md Phase 3)
+  "scripts/ci/uffs-manifest-audit", # 🧾 Workspace manifest-inheritance drift detector (phase-1 follow-up, #211)
+]
+# Default-members policy: intentionally NOT set. `cargo build` /
+# `cargo test` at the workspace root default to ALL members above, which
+# is the right behaviour for a development workspace where every member
+# is a first-class part of the deliverable.  When a future contributor
+# adds a member that should be opt-in (e.g. a heavyweight bench harness),
+# define `default-members = [...]` explicitly and exclude the new
+# member.  Per Phase 1 uffs-manifest-audit invariant 3.11, this comment is
+# the documented-fallback case the drift-detector looks for.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workspace Package Metadata (inherited by all crates)
+# ─────────────────────────────────────────────────────────────────────────────
+[workspace.package]
+version = "0.6.41"
+edition = "2024"
+# No `rust-version` claim: the workspace is structurally nightly-only.
+# `crates/uffs-polars` enables `polars/nightly` unconditionally, which
+# transitively activates `foldhash/nightly` → `#![feature(...)]` → no
+# stable toolchain can build the workspace.  `rust-toolchain.toml` is
+# the single source of truth for the required channel.  See issue #267
+# for the audit + drop rationale.
+license = "MPL-2.0"
+repository = "https://github.com/skyllc-ai/UltraFastFileSearch"
+authors = ["Robert Nio <50460704+githubrobbi@users.noreply.github.com>"]
+description = "UFFS - Ultra Fast File Search using direct NTFS MFT reading and Polars DataFrames"
+documentation = "https://docs.rs/uffs"
+readme = "README.md"
+keywords = ["mft", "ntfs", "file-search", "windows", "polars"]
+categories = ["filesystem", "command-line-utilities"]
+# Default publish policy: most workspace members are internal-only tooling
+# / facade / orchestration crates that must never accidentally hit crates.io.
+# Exactly TWO crates intentionally override this with explicit `publish = true`
+# (`uffs-text`, `uffs-time`) — they are dependency-free leaf crates that are
+# the only members currently cleared for crates.io.  `uffs-broker`,
+# `uffs-broker-protocol`, and `uffs-security` were once earmarked publishable
+# but have since been flipped back to `publish = false` (name-squat
+# reservations / internal-only; see each crate's per-manifest rationale and
+# `docs/refactor/crates-io-publishability-deep-dive.md` §7.3–7.5).  Verify the
+# live set any time with `cargo metadata --no-deps` (publishable == `publish`
+# is null/ANY).  Non-publishable members opt into this default via
+# `publish.workspace = true` (rather than declaring their own `publish = false`)
+# so the root manifest stays the single source of truth.
+# Phase 1 closure gap A — see `docs/dev/baseline/2026-05-12/phase_1_findings.md`.
+publish = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workspace Dependencies (shared versions & pins)
+# ─────────────────────────────────────────────────────────────────────────────
+[workspace.dependencies]
+# ───── Internal Crates ─────
+# Internal crates carry an explicit `version =` requirement (in addition
+# to `path =`) for two reasons:
+#
+#   1. `cargo package` (invoked by release-plz `update` and `publish`)
+#      refuses to package any crate whose `[dependencies]` entries lack
+#      a version requirement, even if the entry resolves through a
+#      `path =`.  Without `version =` here, every consumer-side
+#      `<dep>.workspace = true` inherits an unversioned dep, and
+#      `cargo package` fails with `dependency "<name>" does not specify
+#      a version`.
+#
+#   2. When publishing to crates.io (R8+), cargo strips the `path =`
+#      and uses the registry resolution.  The published crate carries
+#      the `version =` requirement only — consumers who install us
+#      from crates.io get the matching registry version of each
+#      internal dep.  Within the workspace, cargo continues to use the
+#      `path =` and verifies the path-resolved crate's actual version
+#      satisfies the requirement.  Both modes work simultaneously.
+#
+# Maintenance: `build/update_all_versions.rs` already handles the
+# `version = "x.y.z"` substitution pattern in this file shape (see
+# Pattern 5 in that script), so a `just ship` bump keeps all 8 entries
+# in sync with `[workspace.package].version` automatically.  In R5
+# release-plz takes over this responsibility natively.
+#
+# Discovered: 2026-05-07 during R3 → R4 readiness assessment — the
+# R3 shadow workflow (`release-plz.yml`) silently produced empty
+# proposed-plan output for 12 days because `release-plz update`
+# failed at `cargo package` with this very error.  See
+# `release-automation-baseline.md` §10 for the diagnostic trail.
+uffs-polars = { path = "crates/uffs-polars", version = "0.6.41" }
+uffs-security = { path = "crates/uffs-security", version = "0.6.41" }
+uffs-text = { path = "crates/uffs-text", version = "0.6.41" }
+uffs-time = { path = "crates/uffs-time", version = "0.6.41" }
+uffs-version = { path = "crates/uffs-version", version = "0.6.41" }
+uffs-statusfmt = { path = "crates/uffs-statusfmt", version = "0.6.41" }
+uffs-mft = { path = "crates/uffs-mft", version = "0.6.41" }
+uffs-format = { path = "crates/uffs-format", version = "0.6.41" }
+uffs-core = { path = "crates/uffs-core", version = "0.6.41" }
+uffs-client = { path = "crates/uffs-client", version = "0.6.41" }
+# `uffs-broker-protocol` carries the wire-protocol types shared between
+# `uffs-broker` (the elevated handle vendor, Windows-only binary) and
+# `uffs-daemon::broker_client` (the handle consumer).  Pure-logic
+# Layer-0 lib — cross-platform tests run on every CI lane.  Added in
+# F5 (issue #205) so neither side duplicates `BROKER_PIPE_NAME` /
+# wire-format byte literals.
+uffs-broker-protocol = { path = "crates/uffs-broker-protocol", version = "0.6.41" }
+# `uffs-winsvc` — native Windows service control (SCM query/start/stop) +
+# the non-connecting broker-pipe readiness probe.  Layer-0 leaf: its only
+# dependency is the `windows` crate (windows-target), with non-Windows
+# stubs so cross-platform consumers (uffs-update, uffs-cli) compile.
+# Single source of truth for the `sc`/SCM mechanics previously duplicated
+# across uffs-broker, uffs-update, and uffs-cli.
+uffs-winsvc = { path = "crates/uffs-winsvc", version = "0.6.41" }
+# `uffs-fetch` — hardened release-asset transport (blocking reqwest +
+# rustls with retry/timeout/byte-cap, plus `SHA256SUMS` verification),
+# extracted from `uffs-update` as a small public lib so external products
+# can reuse it. Cross-platform pure-logic leaf; keeps the HTTP/TLS stack
+# out of the lean `uffs` CLI exactly as before.
+uffs-fetch = { path = "crates/uffs-fetch", version = "0.6.41" }
+# NOTE: no `uffs-broker` workspace dependency alias on purpose —
+# `uffs-broker` is a binary-only crate (the only `[lib]` it carries is
+# this protocol module's now-extracted sibling); no other workspace
+# member consumes it as a library.
+# NOTE: no `uffs-diag` workspace dependency alias on purpose.
+# It is a top-level diagnostic/tool crate, not a shared runtime dependency.
+# NOTE: no `uffs-bench` workspace dependency alias on purpose either.
+# It is the top-level benchmark-suite orchestrator, consumed by no other
+# workspace member as a library.
+
+# ───── Polars (via facade crate for compilation isolation) ─────
+# Polars is a crates.io dependency pinned by SemVer in
+# crates/uffs-polars/Cargo.toml. Bump with `cargo update -p polars`.
+
+# ───── Async Runtime ─────
+# Net-free feature set so the CLI binary does not pull in `ws2_32.dll`
+# via `tokio::net`.  Crates that actually use `tokio::net` (uffs-daemon,
+# uffs-mcp, and the `async` feature of uffs-client) re-enable `net`
+# explicitly in their own Cargo.toml via `features = ["net"]`.
+tokio = { version = "1.53.1", default-features = false, features = [
+  "io-util",
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+  "tracing",
+] }
+# Async combinators (`try_join_all`, `FutureExt`).  Used by the internal
+# `uffs-ci-pipeline` tool to fan out parallel cargo invocations; kept at
+# workspace scope so any future consumer tracks the same version.
+futures = "0.3.34"
+
+# ───── Windows APIs (Windows only) ─────
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
+  "Win32_Security_WinTrust",
+  "Win32_Storage",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  # Job Object kill-on-close (`uffs-broker`'s Snapshot Manager spawns
+  # `uffs-vss-requestor` per lease, assigned to a Job Object so it's
+  # killed if the Broker dies — `broker/snapshot_manager/vss_helper.rs`).
+  "Win32_System_JobObjects",
+  "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Registry",
+  "Win32_System_Services",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Time",
+  "Win32_System_Wmi",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# ───── Windows Build Tooling (build-dependency only) ─────
+# Embeds the UFFS icon + `app.manifest` (asInvoker, PerMonitorV2 DPI, long-path
+# aware) into each binary's PE on MSVC targets; inert on non-Windows and on
+# non-MSVC Windows toolchains.  Used by every binary crate's `build.rs`
+# (uffs-cli, uffs-daemon, uffs-broker, uffs-mcp, uffs-update, uffs-vss-requestor,
+# uffs-bench, uffs-diag, uffs-mft) — kept at workspace scope for version
+# consistency across all of them.
+winresource = "0.1.31"
+
+# ───── Serialization ─────
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# Phase 6 of memory-tiering: parse `daemon.toml` for per-drive
+# tier overrides + adaptive-TTL knobs in `uffs-daemon::config`.
+# Pinned to v1.1.2 to match the supply-chain exemption already on
+# the transitive copy pulled by other deps; no new vet entry needed.
+toml = "1.1.6"
+
+# ───── Data Structures ─────
+bitflags = "2.13.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+smallvec = "1.16.1"
+zerocopy = { version = "0.8.56", features = ["derive"] }
+
+# ───── Error Handling ─────
+thiserror = "2.0.20"
+anyhow = "1.0.104"
+
+# ───── MCP (Model Context Protocol) ─────
+rmcp = { version = "3.4.0", features = ["server", "transport-io", "macros"] }
+schemars = "1.2.2"
+
+# ───── HTTP / Tower (for MCP Streamable HTTP gateway) ─────
+axum = "0.8.9"
+tower-service = "0.3.3"
+
+# ───── Logging & Tracing ─────
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = [
+  "fmt",
+  "time",
+  "env-filter",
+] }
+tracing-appender = "0.2.5"
+
+# ───── CLI ─────
+clap = { version = "4.6.7", features = [
+  "derive",
+  "env",
+  "unicode",
+  "wrap_help",
+] }
+indicatif = "0.18.6"
+devicons = "0.6.13"
+# ANSI terminal colouring.  Used by the `uffs-ci-pipeline` tool; kept at
+# workspace scope so a future UI surface that wants colored output inherits
+# the same pin.  Audited and `cargo vet certify`'d at 3.1.1 — see
+# supply-chain/audits.toml for the review trail.
+colored = "3.1.1"
+
+# ───── Pattern Matching ─────
+regex = "1.13.1"
+memchr = "2.8.3"
+aho-corasick = "1.1.5"
+globset = "0.4.20"
+
+# ───── Time ─────
+chrono = { version = "0.4.45", features = ["serde"] }
+
+# ───── Directories / Path utilities ─────
+dirs-next = "2.0.0"
+# `which` locates executables on `PATH`; used by `uffs-cli` to resolve the
+# daemon binary when the client auto-spawns it.  Workspace-scoped for
+# version consistency across any future consumers (e.g. `uffs-client`
+# when async spawn lands).
+which = "8.0.6"
+
+# `strsim` — small, zero-dep Levenshtein impl (already in the tree +
+# audited by Google/Mozilla).  Used by `uffs-cli` to suggest the nearest
+# management command for a `--`-flag typo (`--updat` → `--update`) without
+# the thin CLI duplicating the daemon's search-flag registry.
+strsim = "0.11.1"
+
+# ───── Hashing ─────
+rustc-hash = "2.1.3"
+
+# ───── Formatting / Encoding ─────
+itoa = "1.0.18"
+sha2 = "0.11.0"
+hex = "0.4.3"
+
+# ───── Network (self-update acquire helper only) ─────
+# Blocking HTTP with rustls + the system trust store. `rustls-tls-native-roots`
+# matches the existing transitive reqwest config, so no new crate enters the lock.
+#
+# DELIBERATELY HELD AT 0.12 (re-verified 2026-08-21 against 0.13.4; everything
+# else in this workspace is at latest).  0.13 still drops
+# `rustls-tls-native-roots` and routes system trust through
+# `rustls-platform-verifier`, which pulls the Android JNI stack — `jni`,
+# `jni-macros`, `jni-sys`, `combine`, `simd_cesu8`, roughly 63k lines.  None of
+# it appears in the host or `x86_64-pc-windows-msvc` dependency trees (verified
+# with `cargo tree -i jni`): it is Android-only, a target UFFS does not ship.
+# cargo-vet audits every target regardless, so 0.13 would cost ~63k lines of
+# supply-chain review for code that never enters a binary we build, in exchange
+# for no functional gain.  A second, independent blocker verified 2026-08-21:
+# polars-io (through 0.55.2, our current polars) stays on the reqwest 0.12
+# line, so bumping ours to 0.13 would compile TWO reqwest/TLS stacks into the
+# same binaries.  Revisit when reqwest offers system trust
+# without the Android dependency AND polars adopts the 0.13 line, or if we
+# ever target Android.
+reqwest = { version = "0.12.28", default-features = false, features = [
+  "blocking",
+  "rustls-tls-native-roots",
+  "json",
+] }
+
+# ───── Parallelism ─────
+rayon = "1.12.0"
+crossbeam-channel = "0.5.17"
+
+# ───── Memory ─────
+mimalloc = "0.1.52"
+memmap2 = "0.9.11"
+
+# ───── System ─────
+libc = "0.2.189"
+hostname = "0.4.2"
+# CPU-core count detection.  `std::thread::available_parallelism` is the
+# modern alternative, but `num_cpus` handles cgroup / container quotas more
+# gracefully on Linux CI runners.  Kept at workspace scope for consistency
+# if any other crate starts tuning parallelism.
+num_cpus = "1.17.0"
+# Random unique identifiers.  Only the `v4` (random) feature is enabled
+# workspace-wide; consumers that need v1/v5/v7 etc. re-add the feature.
+uuid = { version = "1.26.1", features = ["v4"] }
+
+# ───── Security / Crypto ─────
+aes-gcm = "0.11.1"
+rand = "0.10.2"
+rand_chacha = "0.10.0"
+security-framework = "3.7.0"
+
+# ───── Compression ─────
+zstd = { version = "0.13.3", features = ["zstdmt"] }
+
+# ───── Testing & Benchmarking ─────
+criterion = "0.8.2"
+proptest = "1.11.0"
+assert_cmd = "2.2.2"
+tempfile = "3.27.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WORKSPACE-WIDE SUPER STRICT LINTING CONFIGURATION (2026 CUTTING-EDGE STANDARDS)
+# ═══════════════════════════════════════════════════════════════════════════════
+# All crates inherit these STRICTEST possible clippy settings for maximum code quality
+# This ensures consistent, high-quality standards across the entire workspace
+# Updated: April 2026 - Nightly (1.96+) / Edition 2024
+
+[workspace.lints.clippy]
+# ───── Core lint groups (strictest levels) ─────
+cargo = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# ───── DENY level lints (strictest possible - no exceptions) ─────
+# Panic policy: docs/architecture/code-quality/panic_policy.md
+# defines the five-category taxonomy (A-E) for every prod
+# unwrap/expect/panic site and the required #[expect(...)]
+# annotation shape.  See also docs/architecture/code-quality/lint-posture.md.
+wildcard_imports = "deny"
+unwrap_used = "deny"                   # Force proper error handling — see panic_policy.md §1
+expect_used = "deny"                   # Force proper error handling — see panic_policy.md §1
+panic = "deny"                         # No panics allowed — see panic_policy.md §1
+todo = "deny"                          # No TODOs in production code
+unimplemented = "deny"                 # No unimplemented code
+unreachable = "deny"                   # No unreachable code
+missing_docs_in_private_items = "deny" # Document everything
+undocumented_unsafe_blocks = "deny"    # Document all unsafe (if any)
+multiple_unsafe_ops_per_block = "deny" # Limit unsafe operations
+unnecessary_safety_doc = "deny"        # Accurate safety docs
+unnecessary_safety_comment = "deny"    # Accurate safety comments
+
+# ───── Phase 10 concurrency discipline lints — see concurrency_policy.md §1 ─────
+# The `await_holding_*` family lives in clippy's `suspicious` group, which
+# defaults to `warn`.  We pin all three at `deny` explicitly so the policy
+# doc's enforcement claim is literally true (not "effectively at deny via
+# `-D warnings` in CI") and survives any future tightening of the workspace
+# `--deny warnings` shape.  Triggering one is **never** acceptable in prod
+# code — the canonical fix is the snapshot-then-await pattern documented in
+# `concurrency_policy.md §2.2`.
+await_holding_lock = "deny"         # No std::sync::Mutex/RwLock guard across .await
+await_holding_refcell_ref = "deny"  # No RefCell::borrow{,_mut}() guard across .await
+await_holding_invalid_type = "deny" # No Rc<T> / Cell<T> across .await (Send violation)
+
+# ───── DENY level lints — safety, correctness, discipline ─────
+# These MUST be clean in production code. clippy.toml relaxes test code
+# automatically via allow-*-in-tests settings.
+missing_errors_doc = "deny"   # Document error conditions
+missing_panics_doc = "deny"   # Document panic conditions
+missing_safety_doc = "deny"   # Document safety requirements
+cognitive_complexity = "deny" # Keep functions simple (default threshold=25; violations get scoped #[expect])
+too_many_lines = "deny"       # Keep functions short (default threshold=100; violations get scoped #[expect])
+type_complexity = "deny"      # Keep types simple (default threshold=250; violations get scoped #[expect]) — see trait_policy.md §2
+# ── Phase 7f trait/generic/dispatch discipline lints — see trait_policy.md §2 ──
+too_many_arguments = "deny"          # Keep fn signatures lean (default threshold=7; violations get scoped #[expect]) — see trait_policy.md §2
+trait_duplication_in_bounds = "deny" # Disallow `T: Foo + Foo + Bar` duplicate bounds — see trait_policy.md §8 anti-patterns
+wrong_self_convention = "deny"       # Enforce as_*/into_*/to_*/from_* method-name conventions — see trait_policy.md §2
+multiple_bound_locations = "warn"    # Discourage split `<T: …>` + `where T: …` on the same `T` — see trait_policy.md §2
+large_enum_variant = "deny"          # Optimize enum memory usage
+large_stack_arrays = "deny"          # Avoid large stack allocations
+large_types_passed_by_value = "deny" # Pass large types by reference
+trivially_copy_pass_by_ref = "deny"  # Pass small types by value
+clone_on_ref_ptr = "deny"            # Use Arc::clone(&x) form — see allocation_policy.md §3.1 (category α)
+redundant_clone = "deny"             # Remove redundant clones — see allocation_policy.md §3.4 (category δ)
+unnecessary_wraps = "deny"           # Remove unnecessary Result/Option wraps
+option_option = "deny"               # Avoid Option<Option<T>>
+result_unit_err = "deny"             # Use better error types
+bool_to_int_with_if = "deny"         # Use more idiomatic conversions
+cast_lossless = "deny"               # Use lossless casts
+cast_possible_truncation = "deny"    # Warn about truncating casts
+cast_possible_wrap = "deny"          # Warn about wrapping casts
+cast_precision_loss = "deny"         # Warn about precision loss
+cast_sign_loss = "deny"              # Warn about sign loss
+float_cmp = "deny"                   # Proper float comparisons
+float_cmp_const = "deny"             # Proper float constant comparisons
+lossy_float_literal = "deny"         # Avoid lossy float literals
+imprecise_flops = "deny"             # Precise floating point operations
+suboptimal_flops = "deny"            # Optimal floating point operations
+fn_params_excessive_bools = "deny"   # Avoid too many boolean parameters
+struct_excessive_bools = "deny"      # Avoid too many boolean fields
+verbose_bit_mask = "deny"            # Use cleaner bit operations
+inefficient_to_string = "deny"       # Use efficient string conversions — see allocation_policy.md §2
+string_add = "deny"                  # Use format! instead of string addition
+string_add_assign = "deny"           # Use format! instead of +=
+string_slice = "deny"                # Use proper string slicing
+str_to_string = "deny"               # Use to_owned() instead of to_string() — see allocation_policy.md §2
+implicit_clone = "deny"              # Make clones explicit — see allocation_policy.md §2
+cloned_instead_of_copied = "deny"    # Use .copied() for Copy types — see allocation_policy.md §2
+map_clone = "deny"                   # Use .copied() over .map(Clone::clone) — see allocation_policy.md §2
+filter_map_next = "deny"             # Use find_map instead
+flat_map_option = "deny"             # Use filter_map instead
+manual_filter_map = "deny"           # Use filter_map
+manual_find_map = "deny"             # Use find_map
+map_unwrap_or = "deny"               # Use map_or instead
+unnecessary_unwrap = "deny"          # Remove unnecessary unwraps
+or_fun_call = "deny"                 # Use or_else for expensive operations
+single_match_else = "deny"           # Use if let instead of match
+match_bool = "deny"                  # Use if instead of match on bool
+indexing_slicing = "deny"            # Avoid indexing and slicing — use .get()
+# NOTE (WI-5.1/5.2): `arithmetic_side_effects` is intentionally NOT a
+# workspace lint. The repo's lint gate runs `-D warnings` (see
+# `just/shared.just::common_flags`), which would promote a workspace
+# `"warn"` to a hard error across ~1766 legitimate sites (timestamp math,
+# chunking, compact-cache offsets, crypto) far beyond the untrusted-input
+# parsers this lint is meant to guard. Instead WI-5.2 enables it
+# module-scoped (`#![warn(clippy::arithmetic_side_effects)]`) on the MFT
+# parser modules that consume raw on-disk bytes, where wrapping is a real
+# DoS risk, and converts those sites to `checked_*`.
+match_same_arms = "deny"                           # Combine identical match arms
+redundant_pattern_matching = "deny"                # Simplify pattern matching
+single_match = "deny"                              # Use if let instead of single match
+wildcard_enum_match_arm = "deny"                   # Handle all enum variants explicitly
+enum_glob_use = "deny"                             # Avoid glob imports of enums
+use_self = "deny"                                  # Use Self instead of type name
+needless_pass_by_value = "deny"                    # Pass by reference when appropriate
+trivial_regex = "deny"                             # Use string methods instead of regex
+naive_bytecount = "deny"                           # Use bytecount crate for counting
+manual_memcpy = "deny"                             # Use copy_from_slice
+manual_swap = "deny"                               # Use mem::swap
+ptr_as_ptr = "deny"                                # Use cast() instead of as
+ptr_cast_constness = "deny"                        # Proper const pointer casts
+ref_as_ptr = "deny"                                # Proper reference to pointer conversion
+borrow_as_ptr = "deny"                             # Proper borrow to pointer conversion
+case_sensitive_file_extension_comparisons = "deny" # Case-insensitive file extensions
+path_buf_push_overwrite = "deny"                   # Avoid PathBuf overwrite bugs
+same_name_method = "deny"                          # Avoid method name conflicts
+shadow_reuse = "deny"                              # Avoid variable shadowing
+shadow_same = "deny"                               # Avoid identical variable shadowing
+shadow_unrelated = "deny"                          # Avoid unrelated variable shadowing
+similar_names = "deny"                             # Avoid confusingly similar names
+suspicious_else_formatting = "deny"                # Proper else formatting
+suspicious_unary_op_formatting = "deny"            # Proper unary operator formatting
+tabs_in_doc_comments = "deny"                      # Use spaces in doc comments
+trailing_empty_array = "deny"                      # Remove trailing empty arrays
+unicode_not_nfc = "deny"                           # Use NFC Unicode normalization
+unseparated_literal_suffix = "deny"                # Separate literal suffixes
+unused_self = "deny"                               # Remove unused self parameters
+used_underscore_binding = "deny"                   # Don't use underscore bindings
+useless_let_if_seq = "deny"                        # Simplify let-if sequences
+zero_sized_map_values = "deny"                     # Avoid zero-sized map values
+
+# ───── Restriction lints (hand-picked — we do NOT enable the whole group) ─────
+# Best practice from rolldown, cargo, config-rs: cherry-pick high-value
+# restriction lints individually.
+allow_attributes = "deny"                # Force #[expect] over #[allow] — expect warns when suppression becomes stale
+allow_attributes_without_reason = "deny" # Force reason strings on all #[expect]/#[allow] attributes
+as_pointer_underscore = "deny"           # Dangerous pointer casts with inferred type
+as_underscore = "deny"                   # Catch `as _` with inferred type — lossy/dangerous casts
+cfg_not_test = "deny"                    # Catch cfg(not(test)) misuse
+dbg_macro = "deny"                       # No dbg! in production (clippy.toml allows in tests)
+deref_by_slicing = "deny"                # Use &* instead of &v[..]
+empty_line_after_doc_comments = "deny"   # Clean doc comment style
+empty_line_after_outer_attr = "deny"     # Clean attribute style
+four_forward_slashes = "deny"            # Catch //// (typo for ///)
+iter_filter_is_ok = "deny"               # Use flatten() instead of filter + is_ok
+iter_filter_is_some = "deny"             # Use flatten() instead of filter + is_some
+manual_is_power_of_two = "deny"          # Use is_power_of_two()
+pathbuf_init_then_push = "deny"          # Use PathBuf::from directly
+pub_underscore_fields = "deny"           # Don't expose _prefixed fields
+renamed_function_params = "deny"         # Trait impls must match param names
+set_contains_or_insert = "deny"          # Use entry API for sets
+unnecessary_map_or = "deny"              # Simplify map_or calls
+unnecessary_result_map_or_else = "deny"  # Simplify Result::map_or_else
+
+# ───── Error handling & safety ─────
+assertions_on_result_states = "deny"  # Use unwrap() over assert!(r.is_ok()) for clearer failures
+error_impl_error = "deny"             # Proper Error trait implementations
+exit = "deny"                         # No std::process::exit
+get_unwrap = "deny"                   # Use get().ok_or() instead
+let_underscore_must_use = "deny"      # Don't ignore must_use values
+map_err_ignore = "deny"               # Don't ignore map_err values
+mem_forget = "deny"                   # Avoid mem::forget
+missing_assert_message = "deny"       # Add messages to assertions
+missing_asserts_for_indexing = "deny" # Assert before indexing
+try_err = "deny"                      # Use ? instead of try!
+unused_result_ok = "deny"             # Don't call .ok() just to discard — use `_ = expr;`
+unwrap_in_result = "deny"             # No unwrap/expect inside Result-returning fns
+
+# ───── Memory & allocation ─────
+# Allocation policy: docs/architecture/code-quality/allocation_policy.md
+# defines the five-category taxonomy (α/β/γ/δ/ε) for every prod
+# .clone()/.to_owned()/format!() site and the required per-site
+# justification shape.  Audit script: scripts/dev/clone_alloc_audit.sh.
+# See also docs/architecture/code-quality/lint-posture.md.
+assigning_clones = "deny"              # Use clone_from over .clone() + assign — see allocation_policy.md §2
+rc_buffer = "deny"                     # Avoid Rc<String>/Rc<Vec> — see allocation_policy.md §3.1 (α)
+rc_mutex = "deny"                      # Avoid Rc<Mutex<T>> — see allocation_policy.md §3.1 (α)
+read_zero_byte_vec = "deny"            # Avoid reading into zero-capacity vec
+significant_drop_in_scrutinee = "deny" # Avoid drops in match scrutinee
+significant_drop_tightening = "deny"   # Tighten significant drop scope
+
+# ───── Concurrency & performance ─────
+mutex_atomic = "deny"          # Use atomics instead of mutex for simple types
+stable_sort_primitive = "deny" # Use unstable_sort for primitives
+infinite_loop = "deny"         # Detect infinite loops
+
+# ───── Iterator patterns ─────
+collection_is_never_read = "deny"  # Detect unused collections
+iter_on_empty_collections = "deny" # Avoid iterating empty collections
+iter_on_single_items = "deny"      # Use std::iter::once instead
+iter_over_hash_type = "deny"       # Non-deterministic iteration order
+needless_collect = "deny"          # Avoid unnecessary collect()
+needless_for_each = "deny"         # Use for loop instead of for_each
+
+# ───── String & formatting ─────
+format_push_string = "deny"         # Use write! instead of format! + push
+manual_string_new = "deny"          # Use String::new()
+needless_raw_string_hashes = "deny" # Minimize raw string hashes
+needless_raw_strings = "deny"       # Avoid unnecessary raw strings
+string_lit_chars_any = "deny"       # Use contains instead of chars().any()
+
+# ───── Numeric & type precision ─────
+default_numeric_fallback = "deny"   # Explicit numeric types
+float_arithmetic = "deny"           # Be careful with float arithmetic (scoped #[expect] where needed)
+suspicious_xor_used_as_pow = "deny" # Detect ^ used as power
+unreadable_literal = "deny"         # Use underscores in large literals
+
+# ───── Idiomatic patterns ─────
+equatable_if_let = "deny"       # Use == instead of if let for equality
+if_then_some_else_none = "deny" # Use bool::then instead
+manual_assert = "deny"          # Use assert! macro
+non_zero_suggestions = "deny"   # Prefer NonZeroXX::new(x)? over .unwrap() — composes with unwrap_used
+manual_instant_elapsed = "deny" # Use Instant::elapsed()
+manual_is_ascii_check = "deny"  # Use is_ascii methods
+manual_let_else = "deny"        # Use let-else syntax
+manual_ok_or = "deny"           # Use ok_or instead of match
+option_if_let_else = "deny"     # Use map_or_else instead
+verbose_file_reads = "deny"     # Use fs::read_to_string
+
+# ───── Control flow & logic ─────
+debug_assert_with_mut_call = "deny"     # Avoid side effects in debug_assert
+mixed_read_write_in_expression = "deny" # Avoid read+write in same expression
+same_functions_in_if_condition = "deny" # Avoid duplicate function calls
+
+# ───── Code style & structure ─────
+empty_drop = "deny"                        # Remove empty Drop implementations
+empty_structs_with_brackets = "deny"       # Use unit struct syntax
+impl_trait_in_params = "deny"              # Prefer generics over impl Trait in params
+let_underscore_untyped = "deny"            # Type underscore bindings
+min_ident_chars = "deny"                   # Minimum identifier length
+no_effect_underscore_binding = "deny"      # Remove no-effect underscore bindings
+nonstandard_macro_braces = "deny"          # Consistent macro brace style
+partial_pub_fields = "deny"                # Consistent field visibility
+pub_without_shorthand = "deny"             # Use pub(crate) shorthand
+redundant_type_annotations = "deny"        # Remove redundant type annotations
+ref_patterns = "deny"                      # Avoid ref patterns
+rest_pat_in_fully_bound_structs = "deny"   # Avoid .. in fully bound structs
+semicolon_inside_block = "deny"            # Consistent semicolon placement
+semicolon_outside_block = "deny"           # Consistent semicolon placement
+redundant_pub_crate = "allow"              # Conflicts with rustc::unreachable_pub — we prefer unreachable_pub
+single_call_fn = "allow"                   # Intentional: helper functions improve readability even if called once
+unnecessary_self_imports = "deny"          # Remove unnecessary self imports
+unnecessary_struct_initialization = "deny" # Simplify struct initialization
+unneeded_field_pattern = "deny"            # Remove unneeded field patterns
+
+# ───── Filesystem ─────
+doc_include_without_cfg = "deny" # Wrap doc includes in #[cfg(doc)] to avoid wasting compile time
+filetype_is_file = "deny"        # Detect is_file() misuse — returns false for symlinks
+large_include_file = "deny"      # Cap accidental megabyte-sized include_bytes!/include_str! sites (see clippy.toml `max-include-file-size`)
+
+# ───── Output discipline ─────
+print_stderr = "deny" # Use proper logging instead (clippy.toml allows in tests)
+print_stdout = "deny" # Use proper logging instead (clippy.toml allows in tests)
+use_debug = "deny"    # Avoid Debug in production
+
+# ───── Portability ─────
+host_endian_bytes = "deny"    # Forbid to_ne_bytes/from_ne_bytes — UFFS reads little-endian NTFS on hosts of varying endianness
+std_instead_of_alloc = "deny" # Use alloc when std not needed
+std_instead_of_core = "deny"  # Use core when std not needed
+
+# ───── Testing hygiene ─────
+tests_outside_test_module = "deny" # Keep tests in test modules
+redundant_test_prefix = "deny"     # `fn test_foo` redundant inside `mod tests` — bare `fn foo`
+
+# ───── Unused / dead code ─────
+unused_async = "deny"       # Remove unused async
+unused_peekable = "deny"    # Remove unused peekable
+unused_rounding = "deny"    # Remove unused rounding
+unused_trait_names = "deny" # Drop `use Trait;` imports whose methods are never used through that import
+
+# ───── Exceptions ─────
+# External deps (polars, tokio ecosystem) pull transitive version conflicts
+# that we cannot resolve. Acknowledged and allowed.
+multiple_crate_versions = "allow"
+
+[workspace.lints.rust]
+# ───── Rust compiler lints (strictest possible) ─────
+unsafe_code = "deny"                                        # No unsafe code without explicit allow
+missing_docs = "deny"                                       # Document all public items
+rust_2024_compatibility = { level = "warn", priority = -1 } # Ensure 2024 edition compatibility
+# ───── Future-proofing lints ─────
+future_incompatible = { level = "deny", priority = -1 } # Catch future breaking changes
+nonstandard_style = { level = "warn", priority = -1 }   # Consistent naming conventions
+unexpected_cfgs = "warn"                                # Catch typos / stale cfg attributes
+# ───── Additional safety lints ─────
+unsafe_op_in_unsafe_fn = "deny"    # Require unsafe blocks inside unsafe fn
+unused_crate_dependencies = "warn" # Detect unused dependencies
+unused_import_braces = "deny"      # Clean import style — no tolerance
+unused_lifetimes = "deny"          # Remove unnecessary lifetimes — no tolerance
+unused_macro_rules = "deny"        # Remove unused macro rules — no tolerance
+unused_qualifications = "deny"     # Remove unnecessary path qualifications — no tolerance
+# ───── Code hygiene ─────
+elided_lifetimes_in_paths = "warn"      # Make lifetime annotations explicit in type paths
+explicit_outlives_requirements = "warn" # Remove redundant where T: 'a bounds
+single_use_lifetimes = "warn"           # Detect `fn foo<'a>(x: &'a T)` where 'a is used exactly once — sibling of already-deny unused_lifetimes
+unreachable_pub = "warn"                # Catch pub items not reachable from crate root
+variant_size_differences = "warn"       # Warn about enum variant size differences
+
+[workspace.lints.rustdoc]
+# ───── Documentation quality lints ─────
+broken_intra_doc_links = "deny"       # No broken doc links
+private_intra_doc_links = "warn"      # Warn about private doc links
+missing_crate_level_docs = "warn"     # Require crate-level documentation
+invalid_codeblock_attributes = "warn" # Valid code block attributes
+invalid_html_tags = "warn"            # Valid HTML in docs
+invalid_rust_codeblocks = "warn"      # Valid Rust in doc code blocks
+bare_urls = "warn"                    # Use proper markdown links
+unescaped_backticks = "warn"          # Catch `…` backtick mismatch in doc comments (stable since 1.78)
+redundant_explicit_links = "warn"     # Detect `[Foo](Foo)`-style links where intra-doc link suffices
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cargo Profiles
+# ─────────────────────────────────────────────────────────────────────────────
+[profile.dev]
+opt-level = 0
+debug = true
+debug-assertions = true
+overflow-checks = true
+incremental = true
+codegen-units = 256
+
+[profile.debug-optimized]
+inherits = "dev"
+opt-level = 2
+debug = true
+debug-assertions = true
+overflow-checks = true
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = "symbols"
+rpath = false
+# trim-paths = "object"                 # Reproducible builds (not yet stable in Cargo)
+
+[profile.profiling]
+inherits = "release"
+debug = true         # Enable debug symbols for flamegraph
+strip = false        # Don't strip symbols (needed for profiling)
+lto = false          # Disable LTO for cleaner call stacks in profiles
+codegen-units = 16   # Balance between compile time and consistent stacks
+
+[profile.bench]
+inherits = "release"
+codegen-units = 1
+debug = false
+debug-assertions = false
+incremental = false
+lto = "thin"
+opt-level = 3
+overflow-checks = false
+strip = "debuginfo"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+# Shipped binaries keep overflow checks on: a wrapped integer in the daemon
+# (which runs `panic = "abort"`) is a correctness/DoS risk worth the small
+# perf cost. `release` leaves them off for benchmarks; `dist` is what users
+# actually run, so it opts back in. (WI-5.1)
+overflow-checks = true
+
+[profile.test]
+inherits = "dev"
+# CI-friendly overrides: the dev profile uses codegen-units=256 for local
+# edit-build-run speed, but that produces 256 object files per crate which
+# is hostile to hosted CI runners doing full codegen. Reducing to 16
+# dramatically cuts peak RSS and link time. debug=1 gives stack traces
+# without full debuginfo cost. incremental=false is set via CARGO_INCREMENTAL=0
+# in CI (not here) so local `cargo test` still benefits from incrementals.
+debug = 1          # Stack traces without full debuginfo cost
+codegen-units = 16 # Sane for 4-core hosted runners (vs 256)
+
+[profile.dev.package.polars]
+opt-level = 2 # Optimize Polars even in dev for usable performance
+
+[profile.dev.package."*"]
+opt-level = 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launcher (thin CLI) per-package profile override
+# ─────────────────────────────────────────────────────────────────────────────
+# `uffs-cli` is a tiny launcher that spends most of its wall-clock time on
+# process creation, DLL loads, and IPC round-trip — not in its own code.
+# For this shape of binary `opt-level = "z"` (size-first) usually beats
+# `opt-level = 3` because:
+#
+#   1. Smaller code ⇒ fewer pages to demand-fault in at process start.
+#   2. Smaller code ⇒ less i-cache pressure during the brief runtime.
+#   3. The hot path is serialization + syscalls, which `-Oz` does not
+#      meaningfully slow down.
+#
+# Measured against Run 4 (v0.5.34): baseline `opt-level = 3` gives a
+# ~28 ms CLI-side floor.  A/B of `z` vs `s` vs `3` is in the
+# `perf-phase2-measurement-plan.md` §2.2.
+#
+# The workspace-level `release` profile keeps `opt-level = 3` for
+# daemon/mcp where steady-state perf dominates.
+[profile.release.package.uffs-cli]
+opt-level = "z"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ship profile — minimal panic (removes the field-useless backtrace machinery)
+# ─────────────────────────────────────────────────────────────────────────────
+# Field binaries are stripped, so a *symbolized* backtrace is dead weight — the
+# `gimli`/`addr2line` DWARF machinery inside std is ~10% of the CLI. This profile
+# rebuilds std with `panic = "immediate-abort"`, so a field panic is a bare,
+# process-local `abort()` (no message, no backtrace) — which matches the
+# workspace no-panic lint policy (panics are forbidden in prod anyway). Dev + CI
+# keep normal panics + full backtraces.
+#
+# Built ONLY with build-std (needs nightly + the `rust-src` component):
+#   cargo [xwin] build --profile ship -Z build-std=std,panic_abort --target <T>
+#
+# Measured (x86_64-pc-windows-msvc, uffs.exe): 1,292,800 → 1,167,872  (−9.7%).
+#
+# CAVEAT: `panic_immediate_abort` became a first-class panic strategy in recent
+# nightlies (it was a `-Z build-std-features` flag before), so this is unstable
+# and may need re-touching on a toolchain bump. Deliberately NOT wired into the
+# default release — opt in from the ship build when ready to own that.
+[profile.ship]
+inherits = "release"
+panic = "immediate-abort"
+
+# Per-package overrides do not inherit into a derived profile, so keep the CLI
+# size-first here too.
+[profile.ship.package.uffs-cli]
+opt-level = "z"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-compile profile for cargo-xwin (macOS → Windows MSVC)
+# ─────────────────────────────────────────────────────────────────────────────
+# Workaround for COFF archive size limits. Debug builds of polars produce
+# ~5.5 GB .rlib files that exceed what lld-link can parse.
+# See: docs/xwin-msvc-rlib-size-root-cause-and-workarounds.md
+#
+# Usage: cargo xwin build --profile xwin-dev --target x86_64-pc-windows-msvc
+# ─────────────────────────────────────────────────────────────────────────────
+[profile.xwin-dev]
+inherits = "dev"
+debug = 2               # Full debug for YOUR code
+debug-assertions = true
+overflow-checks = true
+incremental = false     # Required: incremental breaks xwin archives
+opt-level = 0           # Fast compile for your code
+
+# Tame polars crates to keep .rlib under COFF limits
+# codegen-units=1 dramatically reduces archive member count
+# opt-level=1 often REDUCES code size for generic-heavy crates
+# debug=1 keeps line tables for backtraces but skips variable info
+[profile.xwin-dev.package.polars]
+debug = 1
+opt-level = 1
+codegen-units = 1
+
+# All other deps: fast compile, minimal debug
+[profile.xwin-dev.package."*"]
+debug = 1
+opt-level = 0

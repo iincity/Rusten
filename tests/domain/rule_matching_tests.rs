@@ -54,6 +54,64 @@ paths = ["{paths}"]
 }
 
 #[test]
+#[ignore = "local performance gate; run without concurrent scans"]
+fn display_rule_matching_throughput() {
+    let rules = [
+        include_str!("../../rules/builtin/system_temp.toml"),
+        include_str!("../../rules/builtin/system_logs.toml"),
+        include_str!("../../rules/builtin/app_cache.toml"),
+        include_str!("../../rules/builtin/edge_cache.toml"),
+        include_str!("../../rules/builtin/chrome_cache.toml"),
+        include_str!("../../rules/builtin/firefox_cache.toml"),
+        include_str!("../../rules/builtin/wechat_cache.toml"),
+    ]
+    .map(|source| Rule::from_toml(source).unwrap());
+    let paths = [
+        r"C:\Windows\System32\drivers\sample.sys",
+        r"C:\Users\Tester\AppData\Local\Temp\sample.tmp",
+        r"C:\Users\Tester\AppData\Local\Packages\app\LocalCache\sample.bin",
+        r"C:\Program Files\App\sample.dll",
+    ]
+    .map(|path| normalize_path(path).unwrap());
+    let expected = paths
+        .iter()
+        .map(|path| {
+            rules
+                .iter()
+                .filter(|rule| rule.display_item_for_path(path).is_some())
+                .count()
+        })
+        .sum::<usize>();
+    let start = std::time::Instant::now();
+    let mut matches = 0;
+    for _ in 0..100_000 {
+        for path in &paths {
+            for rule in &rules {
+                matches += usize::from(
+                    rule.display_item_for_path(std::hint::black_box(path))
+                        .is_some(),
+                );
+            }
+        }
+    }
+    let elapsed = start.elapsed();
+    assert_eq!(matches, expected * 100_000);
+    eprintln!("400000 display classifications: {elapsed:?}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "classification took {elapsed:?}"
+    );
+}
+
+#[test]
+fn normalized_rule_patterns_preserve_unicode_and_component_boundaries() {
+    let rule = quick_rule(r"C:\缓存\Temp\*");
+    assert!(rule.matches_path(&normalize_path(r"C:\缓存\temp\sample.tmp").unwrap()));
+    assert!(!rule.matches_path(&normalize_path(r"C:\缓存\Temporary\sample.tmp").unwrap()));
+    assert!(!rule.matches_path(&normalize_path(r"C:\缓\sample.tmp").unwrap()));
+}
+
+#[test]
 fn missing_required_schema_fields_are_structured() {
     let error = Rule::from_toml("name = \"missing id\"\n").unwrap_err();
     assert!(matches!(error, domain::RuleError::MissingField("id")));
@@ -104,6 +162,10 @@ fn builtin_system_rules_create_candidates_for_logs_dumps_and_caches() {
             "system.store",
         ),
         (
+            r"C:\Users\Alice\AppData\Local\Downloaded Installations\old\setup.tmp",
+            "system.installers",
+        ),
+        (
             r"C:\Users\Alice\AppData\Roaming\Microsoft\Windows\Recent\item.lnk",
             "system.history",
         ),
@@ -121,6 +183,53 @@ fn builtin_system_rules_create_candidates_for_logs_dumps_and_caches() {
             "expected a cleanup candidate for {path}"
         );
         assert!(candidates[0].estimated_size == Some(4096));
+        assert_eq!(candidates[0].category.as_deref(), Some(category));
+    }
+}
+
+#[test]
+fn builtin_app_cache_paths_generate_their_displayed_categories() {
+    let rule = Rule::from_toml(include_str!("../../rules/builtin/app_cache.toml")).unwrap();
+    for (path, category) in [
+        (
+            r"C:\Users\Alice\AppData\Local\Tencent\WeCom\Cache\old.bin",
+            "app.wecom",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Tencent\QQ\Cache\old.bin",
+            "app.qq",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Thunder Network\Thunder\Cache\old.bin",
+            "app.thunder",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Tencent\Meeting\Cache\old.bin",
+            "app.tencent_meeting",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Adobe\Acrobat\Cache\old.bin",
+            "app.adobe_reader",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Microsoft\Office\Cache\old.bin",
+            "app.office",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Sun\Java\Deployment\cache\old.bin",
+            "app.java",
+        ),
+        (
+            r"C:\Users\Alice\AppData\Local\Oray\Sunlogin\Cache\old.bin",
+            "app.sunlogin",
+        ),
+    ] {
+        let candidates = generate_candidates(
+            std::slice::from_ref(&rule),
+            &[file(path, 4096)],
+            &RuleMatchContext::default(),
+        );
+        assert_eq!(candidates.len(), 1, "missing candidate for {path}");
         assert_eq!(candidates[0].category.as_deref(), Some(category));
     }
 }

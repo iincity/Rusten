@@ -1,0 +1,155 @@
+# ============================================================================
+# uffs-diag: Diagnostic Tools for MFT Analysis
+# ============================================================================
+# Offline, cross-platform diagnostic tools for analyzing MFT snapshots.
+# These tools operate on raw MFT files (.raw) and Parquet exports (.parquet)
+# without requiring live NTFS access.
+#
+# Binaries:
+#   - uffs-analyze-mft-parents: Analyze parent/child coverage in Parquet files
+#   - uffs-dump-mft-records: Dump raw MFT record headers for specific FRS values
+#   - uffs-scan-mft-magic: Scan magic values across all records in a raw MFT
+#   - uffs-dump-mft-extents: (Windows-only) Dump $MFT extent list for a drive
+#   - uffs-cross-check-mft-reference: Cross-check MFT records against reference CSV
+#   - uffs-compare-raw-mft: Compare two raw MFT files record-by-record
+#   - uffs-inspect-mft-record-flow: Inspect raw->fixup->parse pipeline for FRS
+#   - uffs-analyze-diff: Deep comparison of legacy vs Rust UFFS outputs
+#   - uffs-compare-scan-parity: Comprehensive legacy vs Rust scan output parity check
+# ============================================================================
+
+[package]
+name = "uffs-diag"
+description = "Diagnostic tools for UFFS MFT analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 2: explicit `publish = false`
+# at the crate level (NOT just at `release-plz.toml`).  Belt-and-suspenders:
+# - `release-plz.toml::publish = false` blocks the release-plz workflow from
+#   ever calling `cargo publish` for this crate.
+# - This `publish = false` blocks LOCAL `cargo publish -p uffs-diag` from a
+#   developer's machine even if they bypass release-plz.
+#
+# Rationale: `uffs-diag` is a workspace-only diagnostic toolchain.  Its
+# binaries (`uffs-analyze-mft-parents`, `uffs-dump-mft-records`, `uffs-compare-raw-mft`,
+# `uffs-compare-scan-parity`, `uffs-inspect-mft-record-flow`, …) operate on raw MFT
+# snapshots and Parquet exports — they're internal correctness-validation
+# instruments, not user-facing tools.  Shipping them to crates.io would
+# (a) clutter the crates.io namespace, (b) bind us to API stability we
+# don't owe consumers, and (c) leak diagnostic dependencies (`uffs-polars`
+# git pin) into a published crate where they'd be a compatibility footgun.
+#
+# Per workspace-layout in root `Cargo.toml::[workspace.members]`, this is
+# explicitly tagged "Retained workspace-only diagnostic tools (not shipped
+# in dist/)".  Inheriting the workspace default `publish = false` here
+# makes that retention contract enforceable at `cargo publish` time, not
+# just by convention.
+#
+# Posture: **permanently non-publishable** — distinct from the 8
+# Polars-blocked deferred-publishable crates (uffs-mft, uffs-core, etc.).
+# uffs-diag would remain non-publishable even if Polars upstream
+# released its nightly-API patches; it is internal-by-design tooling.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3: docs.rs build configuration.
+# This crate is `publish = false` (internal tooling), so docs.rs will never
+# build it; this block is preserved for workspace-uniform manifest shape (per
+# Phase 1 follow-up F1.15 / issue #214).  Should this crate ever flip to
+# publishable, the block is already in place.
+#
+# `targets` mirrors `uffs-mft` / `uffs-broker`: the diagnostic tools include
+# Windows-only entry points (`uffs-dump-mft-extents`, `uffs-scan-mft-magic`) alongside
+# cross-platform analysis tools (`uffs-analyze-diff`, `uffs-compare-scan-parity`).
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Binaries
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 follow-up F1.13 (issue #213): all 10 diagnostic-tool binaries
+# use hyphenated runtime names to align with the workspace convention.
+# Source-file paths stay snake_case (Cargo accepts `name = "foo-bar"`
+# with `path = "src/bin/foo_bar.rs"`); only the runtime artifact
+# filename flips.  uffs-diag is `publish = false`, so this rename has
+# zero release-artifact blast radius.
+[[bin]]
+name = "uffs-analyze-mft-parents"
+path = "src/bin/analyze_mft_parents.rs"
+
+[[bin]]
+name = "uffs-dump-mft-records"
+path = "src/bin/dump_mft_records.rs"
+
+[[bin]]
+name = "uffs-scan-mft-magic"
+path = "src/bin/scan_mft_magic.rs"
+
+[[bin]]
+name = "uffs-dump-mft-extents"
+path = "src/bin/dump_mft_extents.rs"
+
+[[bin]]
+name = "uffs-cross-check-mft-reference"
+path = "src/bin/cross_check_mft_reference.rs"
+
+[[bin]]
+name = "uffs-compare-raw-mft"
+path = "src/bin/compare_raw_mft.rs"
+
+[[bin]]
+name = "uffs-inspect-mft-record-flow"
+path = "src/bin/inspect_mft_record_flow.rs"
+
+[[bin]]
+name = "uffs-analyze-diff"
+path = "src/bin/analyze_diff.rs"
+
+[[bin]]
+name = "uffs-compare-scan-parity"
+path = "src/bin/compare_scan_parity.rs"
+
+[[bin]]
+name = "uffs-verify-iocp-capture"
+path = "src/bin/verify_iocp_capture.rs"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependencies (minimal set for diagnostic tools)
+# ─────────────────────────────────────────────────────────────────────────────
+[dependencies]
+uffs-version.workspace = true
+# Error handling (used by all binaries)
+anyhow.workspace = true
+
+# Date/time formatting for reports
+chrono.workspace = true
+rayon.workspace = true
+
+# Cryptographic hashing for verification
+sha2.workspace = true
+hex.workspace = true
+
+# MFT reading (for raw file parsing and Windows extent diagnostics)
+uffs-mft.workspace = true
+
+# Polars (for Parquet analysis)
+uffs-polars.workspace = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lints (inherit from workspace)
+# ─────────────────────────────────────────────────────────────────────────────
+# Embeds the UFFS icon + version info + shared app.manifest into the diagnostic
+# binaries (see build.rs) for branding consistency.
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

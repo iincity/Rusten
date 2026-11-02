@@ -1,0 +1,120 @@
+# ============================================================================
+# uffs-core: Query Engine Library
+# ============================================================================
+# This crate provides the query engine for searching and filtering MFT data
+# using Polars lazy API for optimal performance.
+#
+# Features:
+# - Fluent query builder API
+# - Glob and regex pattern matching
+# - Path resolution (FRS → full path)
+# - Multiple export formats (table, JSON, CSV)
+# ============================================================================
+
+[package]
+name = "uffs-core"
+description = "Query engine for UFFS (Ultra Fast File Search) using Polars"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Phase R6→R8 deviation row 5 — polars-subtree publishability deferred.
+# This crate has a direct `uffs-polars.workspace = true` dep plus
+# transitive `uffs-mft`/`uffs-format` deps; ~54 polars import sites in
+# code.  Until polars upstream publishes a release with the nightly-API
+# patches our git/rev pin carries, `cargo package` (and therefore
+# release-plz) hard-fails.  See `crates/uffs-polars/Cargo.toml` and the
+# deviation log row 5 in `docs/architecture/release-automation-plan.md`.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target build so platform-gated query helpers (Windows-only direct-MFT
+# code paths) render alongside the cross-platform query API.  See
+# `uffs-time/Cargo.toml` for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[dependencies]
+# Internal crates
+uffs-polars.workspace = true
+uffs-text.workspace = true
+uffs-time.workspace = true
+uffs-mft.workspace = true
+uffs-format.workspace = true
+uffs-security.workspace = true
+
+# Compression
+zstd.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization (for export)
+serde_json.workspace = true
+
+# Parallelization
+rayon.workspace = true
+chrono.workspace = true
+
+# Hashing (FxHashMap — fast, non-crypto hash for internal tables)
+rustc-hash.workspace = true
+
+# String matching for compiled patterns (aggregate engine).
+regex.workspace = true
+memchr.workspace = true
+globset.workspace = true
+
+# Async (for load_live_drive on Windows)
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# File type icons (for Type sort column)
+devicons.workspace = true
+
+# Platform dirs (for key file path in keystore)
+anyhow.workspace = true
+itoa.workspace = true
+bytemuck.workspace = true
+sha2 = { workspace = true, features = ["default"] }
+# Phase 2b memory-tiering — `compact_storage::ColumnStorage::Mmap`
+# variant + `compact_mmap` runtime-layout module require `memmap2`
+# at the same major version every other workspace consumer (uffs-client,
+# uffs-mft) already uses.  See `docs/refactor/memory-tiering-implementation-plan.md`
+# §3 Phase 2b.
+memmap2.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[[bench]]
+name = "query"
+harness = false
+
+[[bench]]
+name = "search_benchmarks"
+harness = false
+
+[[bench]]
+name = "overlay_read"
+harness = false
+
+[[bench]]
+name = "apply_cost"
+harness = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lints (inherit from workspace)
+# ─────────────────────────────────────────────────────────────────────────────
+[lints]
+workspace = true

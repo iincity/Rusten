@@ -1,0 +1,147 @@
+# ============================================================================
+# uffs-mcp: MCP Server for UFFS (stdio + Streamable HTTP)
+# ============================================================================
+# Bridges AI agents (Claude, Cursor, Windsurf) to the UFFS daemon via the
+# Model Context Protocol (MCP). Default: JSON-RPC over stdio.
+# With `streamable-http` feature: also serves MCP over Streamable HTTP.
+# ============================================================================
+
+[package]
+name = "uffs-mcp"
+description = "MCP server for UFFS — bridges AI agents to the daemon (stdio + HTTP)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Per-crate README override.  Inheriting `readme.workspace = true`
+# resolves to the workspace-root app README (`../../README.md`), the
+# wrong artifact for this library crate's crates.io / docs.rs page and
+# the source of cargo's "readme appears to be a path outside of the
+# package" warning.  Pointing at the crate's own `README.md` (alongside
+# this manifest) ships the right doc and silences the warning.  Permitted
+# by uffs-manifest-audit invariant 3.5 via `KnownExceptions::readme_override_ok`
+# (see `scripts/ci/uffs-manifest-audit/src/audit.rs`).  Issue #240.
+readme = "README.md"
+# Per-crate keywords + categories override (Phase 1 §3.5 escape hatch
+# via `KnownExceptions::keywords_override_ok` / `categories_override_ok`
+# in `scripts/ci/uffs-manifest-audit/src/audit.rs`).  This crate ships an
+# MCP server bridging AI hosts (Claude Desktop, Cursor, Windsurf) to
+# the UFFS daemon — workspace defaults (mft / file-search / polars)
+# would hide it from the MCP / AI tooling audience this crate is
+# actually for.  See issue #241 for the full discoverability rationale.
+keywords = ["mcp", "ai", "rmcp", "uffs", "protocol"]
+categories = ["api-bindings", "command-line-utilities"]
+
+# Phase R6→R8 deviation row 5 — polars-subtree publishability deferred.
+# This crate inherits polars transitively via
+# `uffs-client → uffs-format → uffs-mft → uffs-polars`; no direct
+# polars references in code.  `cargo package` resolves the full dep
+# tree, so this crate hard-fails until polars upstream publishes a
+# release with the nightly-API patches our git/rev pin carries.  See
+# `crates/uffs-polars/Cargo.toml` and the deviation log row 5 in
+# `docs/architecture/release-automation-plan.md`.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target so the platform-gated transport stack (HTTP gateway is
+# cross-platform; MCP stdio plumbing has Windows-vs-Unix branches) renders
+# in docs.  See `uffs-time/Cargo.toml` for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[lib]
+name = "uffs_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "uffsmcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "uffs-mcp-http"
+path = "src/bin/http_gateway.rs"
+required-features = ["streamable-http"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Features (contract documented per playbook §988 — see
+# `crates/uffs-mcp/src/lib.rs` `# Features` rustdoc and
+# `docs/architecture/code-quality/dependency_policy.md`)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `streamable-http` — **default-on**, **additive**.
+#
+#   * Enables the `http` module + the `uffs-mcp-http` binary
+#     (`src/bin/http_gateway.rs`).  The binary carries
+#     `required-features = ["streamable-http"]` and so does not
+#     build at all when the feature is off.
+#   * Adds `rmcp/transport-streamable-http-server`, `dep:axum`,
+#     `dep:tower-service`.
+#   * Default-on so UFFS ships the HTTP gateway as a first-class
+#     transport alongside stdio.  Downstream MCP integrations that
+#     only want the stdio transport pass `default-features = false`.
+#   * Semver: removing items behind `streamable-http` is breaking;
+#     adding new items behind it is not.
+[features]
+default = ["streamable-http"]
+streamable-http = [
+  "rmcp/transport-streamable-http-server",
+  "dep:axum",
+  "dep:tower-service",
+]
+
+[dependencies]
+uffs-version.workspace = true
+# Internal
+uffs-client.workspace = true
+# Typed drive-letter newtype.  Direct dep so the MCP roots / schema
+# code can name `DriveLetter` natively (parse into the typed value
+# rather than chasing the re-export through `uffs-client`).
+uffs-mft.workspace = true
+# Shared per-platform native log-directory resolution (used by the
+# stdio + HTTP-gateway log-file defaults).  Direct dep so the MCP
+# binaries don't reinvent the path logic; replaces the former direct
+# `dirs-next` usage.
+uffs-security.workspace = true
+
+# Async — `net` re-enabled because the HTTP gateway binds a TCP
+# listener and the health-check probes use `tokio::net::TcpStream`.
+tokio = { workspace = true, features = ["net"] }
+
+# MCP SDK
+rmcp.workspace = true
+schemars.workspace = true
+
+# Serialization (MCP JSON-RPC)
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+# HTTP gateway (feature-gated)
+axum = { workspace = true, optional = true }
+tower-service = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client"] }
+tokio = { workspace = true, features = ["test-util"] }
+
+# Embeds the UFFS icon + version info + shared app.manifest into `uffsmcp.exe`
+# (see build.rs). A metadata-less binary is both unbranded and a mild antivirus
+# false-positive signal.
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

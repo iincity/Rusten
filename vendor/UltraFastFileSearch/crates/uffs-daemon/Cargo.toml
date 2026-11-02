@@ -1,0 +1,135 @@
+# ============================================================================
+# uffs-daemon: Background Service Process
+# ============================================================================
+# Holds MFT compact index + trigrams in memory, serves queries via IPC
+# (Unix domain socket / Windows named pipe). Auto-starts on first client
+# connection, auto-retires after idle timeout.
+# ============================================================================
+
+[package]
+name = "uffs-daemon"
+description = "UFFS background daemon (uffsd) — holds MFT index, serves queries via IPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Phase R6→R8 deviation row 5 — polars-subtree publishability deferred.
+# This crate inherits polars transitively via `uffs-mft`, `uffs-core`,
+# and `uffs-format` workspace deps; no direct polars references in
+# code.  `cargo package` resolves the full dep tree, so this crate
+# hard-fails until polars upstream publishes a release with the
+# nightly-API patches our git/rev pin carries.  See
+# `crates/uffs-polars/Cargo.toml` and the deviation log row 5 in
+# `docs/architecture/release-automation-plan.md`.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target build so platform-gated daemon transports (UDS / named pipes)
+# render in docs.  See `uffs-time/Cargo.toml` for the rationale on
+# `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[[bin]]
+name = "uffsd"
+path = "src/main.rs"
+
+[lib]
+name = "uffs_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+uffs-version.workspace = true
+# Internal
+uffs-security.workspace = true
+uffs-mft.workspace = true
+uffs-core.workspace = true
+uffs-client.workspace = true
+# Shared CSV formatter — the daemon's `try_pack_csv_blob` feeds
+# `SearchRow`s through `uffs_format::write_rows` so pre-formatted
+# blobs are byte-identical to the CLI's local formatter.
+uffs-format.workspace = true
+
+# Async — `net` re-enabled here because the daemon's IPC server uses
+# `tokio::net::UnixListener` (unix) / `NamedPipeServer` (windows).
+tokio = { workspace = true, features = ["net"] }
+# `futures::future::Shared` + `BoxFuture` + `FuturesUnordered` for the
+# per-letter single-flight dedup in
+# `IndexManager::ensure_warm_for_dispatch`'s
+# `load_or_join_in_flight` helper (PR-e: thundering-herd promote
+# fix — see `docs/refactor/promote-thundering-herd-fix.md`).
+futures = { workspace = true }
+
+# Serialization (JSON-RPC)
+serde.workspace = true
+serde_json.workspace = true
+# Phase 6 of memory-tiering: `daemon.toml` parser in
+# `crate::config` (DaemonConfig with [memory] / [tiers] / [shards] /
+# [shards.per_drive] sections; per-drive tier overrides feed the
+# adaptive-TTL controller).
+toml.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+# Platform dirs
+dirs-next.workspace = true
+
+# CLI
+clap.workspace = true
+
+# Random (nonce generation for shutdown auth)
+rand.workspace = true
+mimalloc.workspace = true
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
+
+# Unix PID file liveness check
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# Windows PID file liveness check + shared broker wire-protocol types
+# (consumed by `broker_client.rs`, which is fully `#[cfg(windows)]`).
+# Target-gating eliminates the non-Windows extern-crate visibility of
+# `uffs-broker-protocol` — no `use … as _;` markers needed in main.rs
+# or the integration tests because the dep simply doesn't exist on
+# non-Windows targets.  F5 / issue #205.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+uffs-broker-protocol.workspace = true
+
+[dev-dependencies]
+# Phase 1 of memory-tiering: property-test the `ShardState` legal-transition
+# graph in `crates/uffs-daemon/src/cache/shard.rs`.  Workspace-pinned to
+# `proptest = "1.11.0"` (see top-level `Cargo.toml`).
+proptest.workspace = true
+# Phase 2b of memory-tiering: scoped tempdirs for the runtime-orphan-sweep
+# test in `src/lib.rs::tests`.
+tempfile.workspace = true
+# Phase 7 task 7.2 of memory-tiering: `tokio::test(start_paused = true)` +
+# `tokio::time::advance` for deterministic time-based assertions on the
+# per-shard USN journal loop in `src/cache/journal_loop/tests.rs`.  Matches
+# the pattern already used by `uffs-core`, `uffs-mft`, and `uffs-mcp`.
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+# Embeds the UFFS icon + version info + shared app.manifest into `uffsd.exe`
+# (see build.rs, alongside the UFFS_GIT_SHA stamp). A metadata-less binary is
+# both unbranded and a mild antivirus false-positive signal.
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

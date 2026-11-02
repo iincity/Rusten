@@ -1,0 +1,114 @@
+# ============================================================================
+# uffs-polars: Polars Facade Crate
+# ============================================================================
+#
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2025-2026 SKY, LLC.
+#
+# This crate exists for compilation time isolation. Polars is a heavy
+# dependency that takes ~4 minutes to compile. By isolating it here,
+# changes to other crates don't trigger Polars recompilation.
+#
+# All other crates depend on this instead of Polars directly.
+#
+# NOTE: Polars is a normal crates.io dependency pinned by SemVer in the
+#       [dependencies] section below. Bump intentionally with
+#       `cargo update -p polars` (within the version requirement) or by
+#       editing the requirement for a major jump.
+# ============================================================================
+
+[package]
+name = "uffs-polars"
+description = "Polars facade for UFFS (Ultra Fast File Search) - compilation isolation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Publishable: this crate now depends on a plain crates.io polars
+# release (0.54.x), so `cargo package` no longer hits the old polars
+# git-rev / chrono-constraint clash that previously blocked publishing
+# (release-automation-plan.md deviation row 5 — now resolved).
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# `all-features = true` is acceptable here because all `[features]` below
+# are additive and pull non-conflicting polars feature flags.  See
+# `uffs-time/Cargo.toml` for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "uffs_polars"
+path = "src/lib.rs"
+# Disable doc-tests and unit tests: this is a facade crate that re-exports polars.
+# Doc-tests/tests fail because rustdoc/clippy sometimes compile separately and
+# can't resolve the git-dependency polars crate in certain CI configurations.
+doctest = false
+test = false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# POLARS SOURCE COMPILATION (ISOLATED HERE)
+# ──────────────────────────────────────────────────────────────────────────────
+[dependencies]
+# ONLY Polars — all other dependencies provided by consuming crates.
+#
+# Sourced from crates.io (no git/rev).  Bump with a deliberate
+# `cargo update -p polars` (patch/minor within the `0.54` requirement)
+# or by editing the version requirement below for a major jump.
+#
+# History: we previously pinned a `git` + `rev` on `pola-rs/polars` main
+# because the published 0.53.0 lacked nightly-Rust API patches and its
+# polars-arrow declared `chrono ^0.4.42` (clashing with crates.io
+# polars-arrow 0.53.0's `chrono <=0.4.41`), which broke `cargo package`.
+# polars 0.54.x ships those patches and accepts modern chrono, so the
+# git source — and the whole track-upstream-main machinery — is retired.
+polars = { version = "0.55.2", default-features = false, features = [
+  # ===== Core =====
+  "lazy",       # Lazy evaluation (query optimization)
+  "streaming",  # Streaming engine for large queries (was `new_streaming` in 0.53)
+  "performant", # Internal performance optimizations
+  "serde",      # Serialization (compact index wire format)
+  "nightly",    # Nightly Rust features
+  "simd",       # SIMD vectorization
+
+  # ===== Data Types (replaces blanket "dtype-full") =====
+  "dtype-u8",       # UInt8  — flags column
+  "dtype-u16",      # UInt16 — flags column
+  "dtype-datetime", # Datetime — timestamps
+  "dtype-array",    # Required by Polars internals (match exhaustiveness in polars-expr)
+
+  # ===== String Operations =====
+  "strings",   # .str() accessor — used throughout
+  "regex",     # Regex pattern matching — core search
+  "find_many", # .str().contains_any() — multi-literal pattern matching
+
+  # ===== Temporal =====
+  "temporal",  # Date/time casting (timestamps → Datetime)
+  "timezones", # Required by Polars internals when temporal is enabled
+
+  # ===== I/O Formats =====
+  "parquet", # Parquet read/write (primary persistence)
+  "json",    # JSON export (CLI + MCP)
+  "csv",     # CSV export (CLI)
+
+  # ===== Query Operations =====
+  "is_in",   # col.is_in([...]) — compiled_pattern
+  "diff",    # .diff() — compact.rs
+  "bitwise", # col("flags").bitand() — flags.rs
+  "abs",     # Required by Polars internals (match exhaustiveness in polars-expr)
+
+  # ===== Optimizer / Internal =====
+  "fmt", # DataFrame Display formatting
+] }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lints (inherit from workspace)
+# ─────────────────────────────────────────────────────────────────────────────
+[lints]
+workspace = true

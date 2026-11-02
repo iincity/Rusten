@@ -182,4 +182,5 @@ paths = [
   "C:/Windows/Prefetch/*.pf",
   "C:/Users/*/AppData/Local/Packages/*/LocalCache/*",
   "C:/Users/*/AppData/Local/Packages/*/AC/*/INetCache/*",
+  "C:/Users/*/AppData/Local/Downloaded Installations/*",
 ]

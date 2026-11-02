@@ -203,6 +203,8 @@ where
         let Ok(mut log) = self.log.lock() else {
             return failed_result(plan, "operation log lock unavailable");
         };
+        // Bound each durable transaction so small-file cleanup avoids one disk sync per file.
+        let mut records = Vec::with_capacity(64);
         for (index, item) in plan.items.iter().enumerate() {
             if cancel.is_cancelled() {
                 break;
@@ -238,25 +240,31 @@ where
                 {
                     (CleanupItemResult::SkippedChanged, 0)
                 }
-                Ok(candidate) if permanent => actions
-                    .delete_permanently(&candidate)
-                    .map(|bytes| {
-                        (
-                            if candidate.rule_id.as_deref() == Some("system.virtual_memory") {
-                                CleanupItemResult::RestartRequired
-                            } else if candidate.rule_id.as_deref() == Some("recycle_bin") {
-                                CleanupItemResult::RecycleBinEmptied
-                            } else {
-                                CleanupItemResult::DeletedPermanently
-                            },
-                            if candidate.rule_id.as_deref() == Some("system.virtual_memory") {
-                                0
-                            } else {
-                                bytes
-                            },
-                        )
-                    })
-                    .unwrap_or_else(|error| (CleanupItemResult::Failed(error), 0)),
+                Ok(candidate)
+                    if permanent
+                        || (item.explicit_confirmation
+                            && is_fixed_system_storage_cleanup(&candidate)) =>
+                {
+                    actions
+                        .delete_permanently(&candidate)
+                        .map(|bytes| {
+                            (
+                                if candidate.rule_id.as_deref() == Some("system.virtual_memory") {
+                                    CleanupItemResult::RestartRequired
+                                } else if candidate.rule_id.as_deref() == Some("recycle_bin") {
+                                    CleanupItemResult::RecycleBinEmptied
+                                } else {
+                                    CleanupItemResult::DeletedPermanently
+                                },
+                                if candidate.rule_id.as_deref() == Some("system.virtual_memory") {
+                                    0
+                                } else {
+                                    bytes
+                                },
+                            )
+                        })
+                        .unwrap_or_else(|error| (CleanupItemResult::Failed(error), 0))
+                }
                 Ok(candidate) => match candidate.recovery.unwrap_or(RecoveryMode::Recycle) {
                     RecoveryMode::Recycle => actions
                         .move_to_recycle_bin(&candidate)
@@ -300,7 +308,7 @@ where
                 result.recoverable += 1;
             }
             result.released_bytes = result.released_bytes.saturating_add(released);
-            let _ = log.append(operation_record(
+            records.push(operation_record(
                 &item.candidate,
                 &outcome,
                 released,
@@ -312,6 +320,20 @@ where
                 recoverable,
                 released_bytes: released,
             });
+            if records.len() == 64 {
+                if let Err(error) = log.append_batch(&records) {
+                    records.clear();
+                    result.failed += 1;
+                    result.items.push(CleanupResultItem {
+                        path: "操作日志".into(),
+                        result: CleanupItemResult::Failed(error.to_string()),
+                        recoverable: false,
+                        released_bytes: 0,
+                    });
+                    break;
+                }
+                records.clear();
+            }
             on_progress(CleanupProgress {
                 processed: index + 1,
                 total,
@@ -319,6 +341,17 @@ where
                 released_bytes: result.released_bytes,
                 skipped: result.skipped,
                 failed: result.failed,
+            });
+        }
+        if !records.is_empty()
+            && let Err(error) = log.append_batch(&records)
+        {
+            result.failed += 1;
+            result.items.push(CleanupResultItem {
+                path: "操作日志".into(),
+                result: CleanupItemResult::Failed(error.to_string()),
+                recoverable: false,
+                released_bytes: 0,
             });
         }
         result
@@ -536,6 +569,26 @@ mod tests {
     }
 
     #[test]
+    fn recoverable_execution_keeps_explicit_system_storage_actions() {
+        let mut hibernate = candidate();
+        hibernate.path = normalize_path(r"C:\hiberfil.sys").unwrap();
+        hibernate.rule_id = Some("system.hibernate".into());
+        hibernate.mode = Some(CleanupMode::Manual);
+        hibernate.recovery = Some(RecoveryMode::DeleteOnly);
+        let plan = preview_cleanup_with_explicit(&[hibernate]);
+        assert_eq!(plan.items.len(), 1);
+        assert!(plan.items[0].explicit_confirmation);
+        let service = CleanupService::new(PermanentActions, Log::default());
+        let result =
+            service.execute_with_cancellation(&plan, &crate::CancellationToken::default(), |_| {});
+        assert_eq!(
+            result.items[0].result,
+            CleanupItemResult::DeletedPermanently
+        );
+        assert!(!result.items[0].recoverable);
+    }
+
+    #[test]
     fn permanent_cleanup_keeps_validation_errors_failures_and_cancellation() {
         let mut changed = candidate();
         changed.path = normalize_path(r"C:\Windows\Temp\changed.tmp").unwrap();
@@ -642,6 +695,26 @@ mod tests {
         assert_eq!(result.released_bytes, 12);
         assert_eq!(result.failed, 0);
         assert_eq!(result.skipped, 0);
+        assert_eq!(service.log.lock().unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn log_failure_stops_next_batch_and_keeps_processed_file_results() {
+        struct BrokenLog;
+        impl OperationLog for BrokenLog {
+            fn append(&mut self, _: OperationRecord) -> Result<(), AppError> {
+                Err(AppError::Log("disk full".into()))
+            }
+        }
+        let service = CleanupService::new(Actions, BrokenLog);
+        let plan = service.preview(&vec![candidate(); 70]);
+        let result = service.execute(&plan);
+        assert_eq!(result.released_bytes, 64 * 12);
+        assert_eq!(result.items.len(), 65);
+        assert_eq!(result.failed, 1);
+        assert!(
+            matches!(&result.items[64].result, CleanupItemResult::Failed(message) if message.contains("disk full"))
+        );
     }
 
     #[test]

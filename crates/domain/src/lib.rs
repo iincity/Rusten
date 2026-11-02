@@ -29,4 +29,4 @@ pub use rules::{
 pub use scan::{
     ScanEngine, ScanEvent, ScanPhase, ScanStatistics, ScanStatus, ScanWarning, ScanWarningKind,
 };
-pub use scan_index::{FileFilter, ScanIndex};
+pub use scan_index::{DirectoryEntry, DirectoryPage, FileFilter, ScanIndex};

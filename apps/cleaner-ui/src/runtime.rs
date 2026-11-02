@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::{
     collections::HashSet,
     fs,
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -13,20 +12,21 @@ use std::{
 };
 
 use application::{
-    AppConfig, AppError, BackupQuota, CancellationToken, CleanupActions, CleanupItemResult,
-    CleanupPlan, CleanupProgress, CleanupResult, RecoveryId, RecoveryItem, RecoveryStore,
-    RuleService, ScanPort, ScanRequest, ScanResult, ScanService, preview_cleanup_with_explicit,
+    AppError, CancellationToken, CleanupActions, CleanupItemResult, CleanupPlan, CleanupProgress,
+    CleanupResult, RuleService, ScanPort, ScanRequest, ScanResult, ScanService,
+    preview_cleanup_with_explicit,
 };
 use domain::{
     AdminOperation, AdminRequest, CleanupCandidate, CleanupMode, Confidence, PROTOCOL_VERSION,
     RecoveryMode, RequestId, RiskLevel, RuleMatchContext, ScanEngine, ScanEvent, ScanIndex,
     ScanPhase, ScanStatus, normalize_path,
 };
-use persistence::{BackupCatalog, OperationDb};
-use platform_windows::{FastFileScanner, FileScanner, ScanOptions};
+use persistence::OperationDb;
+use platform_windows::{FastFileScanner, FileScanner, ScanOptions, WindowsFileScanner};
 
 const STATISTICS_SCAN_MAX_ENTRIES: u64 = 10_000_000;
 
+#[derive(Debug)]
 pub struct ScanReport {
     pub index: ScanIndex,
     pub engine: ScanEngine,
@@ -142,12 +142,6 @@ impl<'a> LiveCategoryStats<'a> {
     }
 }
 
-pub struct RecoverySnapshot {
-    pub items: Vec<RecoveryItem>,
-    pub quota: BackupQuota,
-    pub corrupt_records: usize,
-}
-
 struct WindowsScanPort {
     progress: Sender<ScanProgress>,
     engine_uffs: Arc<AtomicBool>,
@@ -205,6 +199,10 @@ impl ScanPort for WindowsScanPort {
             category_stats.add_stats(key, *count, *bytes);
         }
         let mut current_path = None;
+        let timing = std::env::var_os("RUSTEN_SCAN_TIMING").is_some();
+        let started = Instant::now();
+        let mut classification_time = Duration::ZERO;
+        let mut index_time = Duration::ZERO;
         for event in receiver {
             let force_progress = matches!(
                 &event,
@@ -220,6 +218,12 @@ impl ScanPort for WindowsScanPort {
                     total_entries: next_total_entries,
                     processed_entries: next_processed_entries,
                 } => {
+                    if timing && phase != next_phase {
+                        eprintln!(
+                            "scan phase {next_phase:?}: {:.3}s",
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
                     engine = next_engine;
                     phase = next_phase;
                     total_entries = next_total_entries;
@@ -232,8 +236,16 @@ impl ScanPort for WindowsScanPort {
                 }
                 ScanEvent::File(file) => {
                     current_path = Some(file.path().display().to_owned());
+                    let classify_started = timing.then(Instant::now);
                     category_stats.add_file(&file);
+                    if let Some(start) = classify_started {
+                        classification_time += start.elapsed();
+                    }
+                    let index_started = timing.then(Instant::now);
                     index.add_file(file);
+                    if let Some(start) = index_started {
+                        index_time += start.elapsed();
+                    }
                 }
                 ScanEvent::Warning(warning) => {
                     index.add_warning(warning);
@@ -263,7 +275,7 @@ impl ScanPort for WindowsScanPort {
                     progress_percent: progress_percent(
                         engine,
                         phase,
-                        &statistics,
+                        statistics,
                         total_entries,
                         processed_entries,
                         request.max_entries,
@@ -275,6 +287,13 @@ impl ScanPort for WindowsScanPort {
             }
         }
         bridge_cancel.store(true, Ordering::Release);
+        if timing {
+            eprintln!(
+                "scan work: classification={:.3}s index={:.3}s",
+                classification_time.as_secs_f64(),
+                index_time.as_secs_f64()
+            );
+        }
         let _ = bridge.join();
         let summary = scan_thread
             .join()
@@ -320,25 +339,50 @@ fn progress_percent(
     }
 }
 
+#[cfg(test)]
 pub fn scan_system_drive(
     cancel: CancellationToken,
     progress: Sender<ScanProgress>,
 ) -> Result<ScanReport, String> {
     let root = normalize_path(r"C:\").map_err(|error| error.to_string())?;
+    scan_system_drive_at(root, cancel, progress)
+}
+
+pub fn scan_system_drive_at(
+    root: domain::NormalizedPath,
+    cancel: CancellationToken,
+    progress: Sender<ScanProgress>,
+) -> Result<ScanReport, String> {
+    let timing = std::env::var_os("RUSTEN_SCAN_TIMING").is_some();
+    let started = Instant::now();
+    let checkpoint = |stage: &str| {
+        if timing {
+            eprintln!(
+                "scan timing {stage}: {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    };
+    let system_scope = root.display().eq_ignore_ascii_case(r"C:\");
     let volume = platform_windows::query_volume_stats(&root).map_err(|error| error.to_string())?;
     let engine_uffs = Arc::new(AtomicBool::new(false));
     let final_categories = Arc::new(Mutex::new(None));
     let rule_service = RuleService::load_builtin().map_err(|error| error.to_string())?;
     let rules = rule_service.rules().to_vec();
-    let recycle_bin_stats = platform_windows::shell::recycle_bin::query_current_user_stats().ok();
-    // Reuse the displayed global scope so selected space always has a cleanup candidate.
-    let actionable_recycle_bin_stats = recycle_bin_stats;
+    let recycle_bin_query =
+        system_scope.then(platform_windows::shell::recycle_bin::query_current_user_stats);
+    let recycle_bin_stats = recycle_bin_query
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .copied();
     let mut initial_category_stats = Vec::new();
     if let Some(stats) = recycle_bin_stats {
         initial_category_stats.push(("recycle_bin".to_owned(), stats.item_count, stats.bytes));
     }
-    let restore_points_bytes =
-        platform_windows::recovery::query_c_drive_shadow_storage_bytes().ok();
+    let restore_points_bytes = system_scope
+        .then(|| platform_windows::recovery::query_c_drive_shadow_storage_bytes().ok())
+        .flatten();
+    checkpoint("external statistics");
     if let Some(bytes) = restore_points_bytes {
         initial_category_stats.push(("system.restore_points".to_owned(), 1, bytes));
     }
@@ -356,35 +400,77 @@ pub fn scan_system_drive(
         ScanRequest {
             root: root.clone(),
             max_depth: ScanOptions::default().max_depth,
-            // Keep the first scan interactive; deeper scans remain available
-            // through the CLI's explicit max-entry option.
-            max_entries: 10_000,
+            max_entries: u64::MAX,
         },
-        cancel,
+        cancel.clone(),
     );
     let rules = service.rules().map_err(|error| error.to_string())?;
     let result = handle.finish().map_err(|error| error.to_string())?;
+    checkpoint("enumeration and live categories");
     let engine = if engine_uffs.load(Ordering::Acquire) {
         ScanEngine::Uffs
     } else {
         ScanEngine::Win32
     };
     let (mut index, status) = result.into_parts();
-    let supplemental_files = if needs_supplemental_statistics(status) {
-        spawn_supplemental_statistics_scan(supplemental_statistics_patterns(&rules))
-            .join()
-            .unwrap_or_default()
+    if cancel.is_cancelled() || status == ScanStatus::Canceled {
+        return Ok(canceled_scan_report(index, engine, &volume));
+    }
+    // Refresh after scanning so items recycled during the scan are also actionable.
+    let recycle_bin_query = if system_scope {
+        Some(platform_windows::shell::recycle_bin::query_current_user_stats())
+    } else {
+        recycle_bin_query
+    };
+    let recycle_bin_stats = match recycle_bin_query {
+        Some(Ok(stats)) => Some(stats),
+        Some(Err(error)) => {
+            index.add_warning(domain::ScanWarning::new(
+                None,
+                format!("回收站读取失败：{error}"),
+            ));
+            None
+        }
+        None => None,
+    };
+    let mut supplemental_files = if system_scope && needs_supplemental_statistics(status) {
+        let platform_cancel = platform_windows::CancellationToken::default();
+        let worker = spawn_supplemental_statistics_scan(
+            supplemental_statistics_patterns(&rules),
+            platform_cancel.clone(),
+        );
+        while !worker.is_finished() {
+            if cancel.is_cancelled() {
+                platform_cancel.cancel();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        worker.join().unwrap_or_default()
     } else {
         Vec::new()
     };
+    if system_scope {
+        scan_redirected_profile_files(&mut index, &cancel, &mut supplemental_files);
+    }
+    checkpoint("refresh and supplemental statistics");
+    if cancel.is_cancelled() {
+        return Ok(canceled_scan_report(index, engine, &volume));
+    }
     let files = index.files();
     let mut candidate_files = files.clone();
     candidate_files.extend(supplemental_files.iter().cloned());
-    let mut candidates =
-        domain::generate_candidates(&rules, &candidate_files, &RuleMatchContext::default());
-    mark_locked_cleanup_candidates(&mut candidates);
-    if let Some(candidate) = actionable_recycle_bin_stats
-        .and_then(|stats| recycle_bin_candidate_if_present(&root, stats))
+    let context = platform_windows::running_process_names()
+        .map(|names| RuleMatchContext::default().with_running_processes(names))
+        .unwrap_or_default();
+    let mut candidates = domain::generate_candidates(&rules, &candidate_files, &context);
+    checkpoint("candidate matching");
+    mark_locked_cleanup_candidates_with_cancel(&mut candidates, &cancel);
+    if cancel.is_cancelled() {
+        return Ok(canceled_scan_report(index, engine, &volume));
+    }
+    checkpoint("candidate lock checks");
+    if let Some(candidate) =
+        recycle_bin_stats.and_then(|stats| recycle_bin_candidate_if_present(&root, stats))
     {
         candidates.push(candidate);
     }
@@ -416,7 +502,9 @@ pub fn scan_system_drive(
     if let Some(bytes) = restore_points_bytes {
         add_external_category_stats(&mut categories, "system.restore_points", 1, bytes);
     }
-    candidates.extend(system_storage_candidates(&categories));
+    if system_scope {
+        candidates.extend(system_storage_candidates(&categories));
+    }
     let executable_plan = prepare_cleanup_plan_with_explicit(&candidates);
     let executable_candidates = executable_plan
         .items
@@ -439,6 +527,7 @@ pub fn scan_system_drive(
         current_path: None,
         categories: categories.clone(),
     });
+    checkpoint("complete");
     Ok(ScanReport {
         index,
         engine,
@@ -454,6 +543,110 @@ pub fn scan_system_drive(
     })
 }
 
+fn scan_redirected_profile_files(
+    index: &mut ScanIndex,
+    cancel: &CancellationToken,
+    files: &mut Vec<domain::FileRecord>,
+) {
+    let Some(local) = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let Some(profile) = local
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf)
+    else {
+        return;
+    };
+    let mut roots = vec![local];
+    if let Some(roaming) = std::env::var_os("APPDATA").map(std::path::PathBuf::from) {
+        roots.push(roaming.join("Tencent/WeChat"));
+        roots.push(roaming.join("Microsoft/Windows/Recent"));
+    }
+    roots.push(profile.join("Documents/WeChat Files"));
+
+    for logical_root in roots {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let Ok(logical) = normalize_path(&logical_root.to_string_lossy()) else {
+            continue;
+        };
+        let Ok(metadata) = platform_windows::read_metadata(&logical) else {
+            continue;
+        };
+        if !metadata.is_directory() {
+            continue;
+        }
+        let Ok(physical) = normalize_path(
+            metadata
+                .physical_path()
+                .strip_prefix(r"\\?\")
+                .unwrap_or(metadata.physical_path()),
+        ) else {
+            continue;
+        };
+        if platform_windows::paths_equal_ordinal(logical.display(), physical.display()) {
+            continue;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let scan_cancel = platform_windows::CancellationToken::default();
+        let worker_cancel = scan_cancel.clone();
+        let scan_root = physical.clone();
+        let worker = thread::spawn(move || {
+            WindowsFileScanner.scan(
+                scan_root,
+                ScanOptions {
+                    collect_lock_state: false,
+                    ..ScanOptions::default()
+                },
+                sender,
+                worker_cancel,
+            )
+        });
+        for event in receiver {
+            if cancel.is_cancelled() {
+                scan_cancel.cancel();
+            }
+            let ScanEvent::File(file) = event else {
+                continue;
+            };
+            let Some(suffix) = file.path().display().get(physical.display().len()..) else {
+                continue;
+            };
+            let Ok(mapped) = normalize_path(&format!("{}{suffix}", logical.display())) else {
+                continue;
+            };
+            files.push(
+                domain::FileRecord::new(
+                    mapped,
+                    index.root_directory_id(),
+                    file.identity(),
+                    file.logical_size(),
+                    file.allocated_size(),
+                )
+                .with_facts(file.facts().clone()),
+            );
+        }
+        match worker.join() {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                index.add_warning(domain::ScanWarning::new(
+                    Some(logical),
+                    format!("重定向目录扫描失败：{error}"),
+                ));
+            }
+            Err(_) => {
+                index.add_warning(domain::ScanWarning::new(
+                    Some(logical),
+                    "重定向目录扫描线程异常退出",
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 fn final_categories_for_candidates(
     rules: &[domain::Rule],
     candidates: &[CleanupCandidate],
@@ -480,18 +673,20 @@ fn supplemental_statistics_patterns(rules: &[domain::Rule]) -> Vec<String> {
 
 fn spawn_supplemental_statistics_scan(
     patterns: Vec<String>,
+    cancel: platform_windows::CancellationToken,
 ) -> thread::JoinHandle<Vec<domain::FileRecord>> {
     thread::spawn(move || {
-        platform_windows::enumerate_statistics_files_for_patterns(
+        platform_windows::filesystem::enumerate_statistics_files_for_patterns_with_cancel(
             &patterns,
             STATISTICS_SCAN_MAX_ENTRIES,
+            &cancel,
         )
         .unwrap_or_default()
     })
 }
 
 fn needs_supplemental_statistics(status: ScanStatus) -> bool {
-    status != ScanStatus::Complete
+    status == ScanStatus::Partial
 }
 
 fn final_categories_for_files(
@@ -506,6 +701,7 @@ fn final_categories_for_files(
     stats.snapshot()
 }
 
+#[cfg(test)]
 fn final_categories_with_external_stats(
     rules: &[domain::Rule],
     candidates: &[CleanupCandidate],
@@ -542,6 +738,9 @@ fn add_supplemental_category_stats(
     existing_reparse_points: &[domain::FileRecord],
     supplemental: &[domain::FileRecord],
 ) {
+    if supplemental.is_empty() {
+        return;
+    }
     let stats = LiveCategoryStats::new(rules);
     let mut seen = HashSet::new();
     for file in existing.iter().chain(existing_reparse_points) {
@@ -598,12 +797,32 @@ fn reconcile_actionable_category_stats(
     }
 }
 
-fn mark_locked_cleanup_candidates(candidates: &mut [CleanupCandidate]) {
-    for candidate in candidates.iter_mut().filter(|candidate| {
-        candidate.mode == Some(CleanupMode::Quick) && candidate.file_identity.is_some()
-    }) {
+#[cfg(test)]
+fn mark_locked_cleanup_candidates(candidates: &mut Vec<CleanupCandidate>) {
+    mark_locked_cleanup_candidates_with_cancel(candidates, &CancellationToken::default());
+}
+
+fn mark_locked_cleanup_candidates_with_cancel(
+    candidates: &mut Vec<CleanupCandidate>,
+    cancel: &CancellationToken,
+) {
+    candidates.retain_mut(|candidate| {
+        if cancel.is_cancelled() {
+            return true;
+        }
+        if candidate.file_identity.is_none() {
+            return true;
+        }
         let status = platform_windows::filesystem::lock_status(&candidate.path);
-        if !matches!(status, platform_windows::filesystem::LockStatus::Available) {
+        if matches!(status, platform_windows::filesystem::LockStatus::Unknown(code)
+            if std::io::Error::from_raw_os_error(code as i32).kind()
+                == std::io::ErrorKind::NotFound)
+        {
+            return false;
+        }
+        if candidate.mode == Some(CleanupMode::Quick)
+            && quick_clean_probe_blocks(&candidate.path, status)
+        {
             candidate.quick_clean_eligible = false;
             candidate.quick_clean_block_reason = Some(
                 match status {
@@ -621,6 +840,38 @@ fn mark_locked_cleanup_candidates(candidates: &mut [CleanupCandidate]) {
                 .into(),
             );
         }
+        true
+    });
+}
+
+fn quick_clean_probe_blocks(
+    path: &domain::NormalizedPath,
+    status: platform_windows::filesystem::LockStatus,
+) -> bool {
+    status != platform_windows::filesystem::LockStatus::Available
+        && !(status == platform_windows::filesystem::LockStatus::AccessDenied
+            && requires_admin_cleanup(path))
+}
+
+fn canceled_scan_report(
+    mut index: ScanIndex,
+    engine: ScanEngine,
+    volume: &platform_windows::VolumeStats,
+) -> ScanReport {
+    index.mark_canceled();
+    let statistics = index.statistics();
+    ScanReport {
+        files: statistics.file_count(),
+        logical_bytes: statistics.logical_size(),
+        warnings: index.warnings().len() as u64 + index.omitted_warnings(),
+        index,
+        engine,
+        status: ScanStatus::Canceled,
+        candidate_count: 0,
+        estimated_bytes: 0,
+        total_bytes: volume.total_bytes(),
+        available_bytes: volume.available_bytes(),
+        categories: builtin_scan_categories(),
     }
 }
 
@@ -750,6 +1001,7 @@ fn declared_scan_categories(
     categories
 }
 
+#[cfg(test)]
 fn aggregate_scan_categories(
     rules: &[domain::Rule],
     candidates: &[CleanupCandidate],
@@ -798,75 +1050,6 @@ fn aggregate_scan_categories(
     categories.into_values().collect()
 }
 
-pub fn load_recovery_items() -> Vec<RecoveryItem> {
-    load_recovery_snapshot().items
-}
-
-pub fn load_recovery_snapshot() -> RecoverySnapshot {
-    let Some(root) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return RecoverySnapshot {
-            items: Vec::new(),
-            quota: BackupQuota {
-                max_bytes: AppConfig::default().backup_quota_bytes,
-                used_bytes: 0,
-                recoverable_items: 0,
-            },
-            corrupt_records: 0,
-        };
-    };
-    let config = persistence::ConfigStore::read(&root.join("Rusten").join("config.toml"))
-        .ok()
-        .map(|contents| application::ConfigService::load_toml(&contents).config)
-        .unwrap_or_default();
-    BackupCatalog::open(root.join("Rusten").join("backups.jsonl"))
-        .map(|catalog| RecoverySnapshot {
-            items: catalog.items(),
-            quota: catalog.quota(config.backup_quota_bytes),
-            corrupt_records: catalog.corrupt_record_count(),
-        })
-        .unwrap_or(RecoverySnapshot {
-            items: Vec::new(),
-            quota: BackupQuota {
-                max_bytes: config.backup_quota_bytes,
-                used_bytes: 0,
-                recoverable_items: 0,
-            },
-            corrupt_records: 0,
-        })
-}
-
-pub fn purge_expired_recovery() -> Result<usize, String> {
-    let root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            "LOCALAPPDATA is unavailable; recovery catalog cannot be opened".to_owned()
-        })?;
-    let data_root = root.join("Rusten");
-    let config = persistence::ConfigStore::read(&data_root.join("config.toml"))
-        .ok()
-        .map(|contents| application::ConfigService::load_toml(&contents).config)
-        .unwrap_or_default();
-    let catalog =
-        BackupCatalog::open(data_root.join("backups.jsonl")).map_err(|error| error.to_string())?;
-    let now = now_secs();
-    catalog
-        .purge_expired(now, config.backup_retention_secs, config.backup_quota_bytes)
-        .map_err(|error| format!("清理恢复备份失败：{error:?}"))
-}
-
-pub fn restore_recovery(id: RecoveryId) -> Result<(), String> {
-    let root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            "LOCALAPPDATA is unavailable; recovery catalog cannot be opened".to_owned()
-        })?;
-    let catalog = BackupCatalog::open(root.join("Rusten").join("backups.jsonl"))
-        .map_err(|error| error.to_string())?;
-    catalog
-        .restore(id, application::RestoreDestination::Original)
-        .map_err(|error| format!("恢复失败：{error:?}"))
-}
-
 #[cfg(test)]
 mod tests {
     use platform_windows::FileScanner;
@@ -885,17 +1068,53 @@ mod tests {
 
     #[test]
     fn supplemental_statistics_scan_is_safe_for_empty_patterns() {
-        let files = spawn_supplemental_statistics_scan(Vec::new())
-            .join()
-            .expect("supplemental scan worker must exit");
+        let files = spawn_supplemental_statistics_scan(
+            Vec::new(),
+            platform_windows::CancellationToken::default(),
+        )
+        .join()
+        .expect("supplemental scan worker must exit");
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn canceled_supplemental_scan_does_not_walk_roots() {
+        let cancel = platform_windows::CancellationToken::default();
+        cancel.cancel();
+        let files = spawn_supplemental_statistics_scan(vec![r"C:\Windows\*".into()], cancel)
+            .join()
+            .unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn canceled_scan_retains_index_without_building_cleanup_work() {
+        let root = normalize_path(&std::env::temp_dir().to_string_lossy()).unwrap();
+        let volume = platform_windows::query_volume_stats(&root).unwrap();
+        let mut index = ScanIndex::new(root.clone());
+        index.add_file(FileRecord::new(
+            normalize_path(&format!(r"{}\retained.tmp", root.display())).unwrap(),
+            index.root_directory_id(),
+            FileIdentity {
+                volume_serial: 1,
+                file_index: 1,
+            },
+            42,
+            42,
+        ));
+        let report = super::canceled_scan_report(index, ScanEngine::Win32, &volume);
+        assert_eq!(report.status, domain::ScanStatus::Canceled);
+        assert_eq!(report.files, 1);
+        assert_eq!(report.logical_bytes, 42);
+        assert_eq!(report.candidate_count, 0);
+        assert_eq!(report.index.files().len(), 1);
     }
 
     #[test]
     fn complete_scan_does_not_repeat_supplemental_directory_walk() {
         assert!(!needs_supplemental_statistics(domain::ScanStatus::Complete));
         assert!(needs_supplemental_statistics(domain::ScanStatus::Partial));
-        assert!(needs_supplemental_statistics(domain::ScanStatus::Canceled));
+        assert!(!needs_supplemental_statistics(domain::ScanStatus::Canceled));
     }
     use application::RuleService;
     use domain::{
@@ -1046,22 +1265,22 @@ mod tests {
         assert!(
             patterns
                 .iter()
-                .any(|pattern| { pattern.contains("Windows/SoftwareDistribution/DataStore") })
+                .any(|pattern| { pattern.contains(r"Windows\SoftwareDistribution\DataStore") })
         );
         assert!(
             patterns
                 .iter()
-                .any(|pattern| { pattern.contains("AppData/Local/Microsoft/Windows/INetCache") })
+                .any(|pattern| { pattern.contains(r"AppData\Local\Microsoft\Windows\INetCache") })
         );
         assert!(
             patterns
                 .iter()
-                .any(|pattern| { pattern.contains("AppData/Local/Microsoft/Windows/Explorer") })
+                .any(|pattern| { pattern.contains(r"AppData\Local\Microsoft\Windows\Explorer") })
         );
         assert!(
             patterns
                 .iter()
-                .any(|pattern| pattern.contains("Windows/Servicing/LCU"))
+                .any(|pattern| pattern.contains(r"Windows\Servicing\LCU"))
         );
     }
 
@@ -1097,7 +1316,7 @@ mod tests {
     #[test]
     fn live_category_stats_count_rule_matched_files_before_scan_finishes() {
         let service = RuleService::load_builtin().unwrap();
-        let index = ScanIndex::new(normalize_path(r"C:\").unwrap());
+        let mut index = ScanIndex::new(normalize_path(r"C:\").unwrap());
         let file = FileRecord::new(
             normalize_path(r"C:\Windows\Temp\live.tmp").unwrap(),
             index.root_directory_id(),
@@ -1119,6 +1338,16 @@ mod tests {
             .unwrap();
         assert_eq!(temp.count, 1);
         assert_eq!(temp.estimated_bytes, 4096);
+        index.add_file(file.clone());
+        let mut plan =
+            super::prepare_cleanup_plan_with_explicit(&[super::explicit_file_candidate(&file)]);
+        super::classify_explicit_cleanup_items(&mut plan, &index);
+        assert_eq!(
+            plan.items[0].candidate.category.as_deref(),
+            Some("system.temp")
+        );
+        assert!(plan.items[0].candidate.rule_id.is_none());
+        assert_eq!(plan.by_category.get("system.temp"), Some(&4096));
     }
 
     #[test]
@@ -1448,7 +1677,7 @@ mod tests {
     #[test]
     fn display_paths_handle_unicode_paths_without_panicking() {
         let index = ScanIndex::new(normalize_path(r"C:\").unwrap());
-        let files = vec![FileRecord::new(
+        let files = [FileRecord::new(
             normalize_path(r"C:\用户\缓存文件.tmp").unwrap(),
             index.root_directory_id(),
             FileIdentity {
@@ -1511,7 +1740,7 @@ mod tests {
             .share_mode(1)
             .open(&path)
             .unwrap();
-        let mut candidate = CleanupCandidate {
+        let candidate = CleanupCandidate {
             path: normalize_path(&path.to_string_lossy()).unwrap(),
             file_identity: Some(FileIdentity {
                 volume_serial: 1,
@@ -1533,8 +1762,9 @@ mod tests {
             last_write_time: Some(1),
         };
 
-        mark_locked_cleanup_candidates(std::slice::from_mut(&mut candidate));
-        let plan = prepare_cleanup_plan_with_explicit(std::slice::from_mut(&mut candidate));
+        let mut candidates = vec![candidate];
+        mark_locked_cleanup_candidates(&mut candidates);
+        let plan = prepare_cleanup_plan_with_explicit(&candidates);
 
         assert!(plan.items.is_empty());
         assert_eq!(plan.estimated_bytes, 0);
@@ -1543,7 +1773,54 @@ mod tests {
     }
 
     #[test]
+    fn missing_cached_files_are_removed_before_cleanup_planning() {
+        let missing = std::env::temp_dir().join(format!(
+            "rusten-missing-candidate-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let candidate = CleanupCandidate {
+            path: normalize_path(&missing.to_string_lossy()).unwrap(),
+            file_identity: Some(FileIdentity {
+                volume_serial: 1,
+                file_index: 3,
+            }),
+            rule_id: Some("system_temp".into()),
+            category: Some("system.temp".into()),
+            reason: None,
+            estimated_size: Some(4096),
+            quick_clean_eligible: true,
+            quick_clean_block_reason: None,
+            mode: Some(CleanupMode::Quick),
+            risk: Some(RiskLevel::P3),
+            confidence: Some(Confidence::High),
+            recovery: Some(RecoveryMode::Recycle),
+            locked: Some(false),
+            path_allowed: Some(true),
+            file_identity_unchanged: Some(true),
+            last_write_time: Some(1),
+        };
+        let mut manual = candidate.clone();
+        manual.mode = Some(CleanupMode::Manual);
+        let mut candidates = vec![candidate, manual];
+
+        mark_locked_cleanup_candidates(&mut candidates);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
     fn admin_fallback_covers_allowed_system_garbage_only() {
+        assert!(!super::quick_clean_probe_blocks(
+            &normalize_path(r"C:\Windows\Logs\CBS\CBS.log").unwrap(),
+            platform_windows::filesystem::LockStatus::AccessDenied,
+        ));
+        assert!(super::quick_clean_probe_blocks(
+            &normalize_path(r"C:\Users\Alice\AppData\Local\Temp\temp.tmp").unwrap(),
+            platform_windows::filesystem::LockStatus::AccessDenied,
+        ));
         for path in [
             r"C:\Windows\Logs\CBS\CBS.log",
             r"C:\Windows\LiveKernelReports\WATCHDOG\dump.dmp",
@@ -1687,8 +1964,35 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "read-only full system scan timing on the local machine"]
+    fn system_scan_read_only_timing() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let report = super::scan_system_drive(Default::default(), sender).unwrap();
+        eprintln!(
+            "scan result: {:?}, {:?}, {} files, {} candidates, {:.3}s",
+            report.status,
+            report.engine,
+            report.files,
+            report.candidate_count,
+            started.elapsed().as_secs_f64()
+        );
+        assert_eq!(report.status, domain::ScanStatus::Complete);
+        assert!(report.files > 0);
+    }
+
+    #[test]
     #[ignore = "runs the real system scan; deletes only four disposable fixture files"]
     fn system_scan_cleanup_roundtrip_tracks_live_files() {
+        struct OwnedFolders(Vec<std::path::PathBuf>);
+        impl Drop for OwnedFolders {
+            fn drop(&mut self) {
+                for folder in &self.0 {
+                    let _ = fs::remove_dir_all(folder);
+                }
+            }
+        }
+
         let scan = || {
             let (sender, _receiver) = std::sync::mpsc::channel();
             super::scan_system_drive(Default::default(), sender).unwrap()
@@ -1696,7 +2000,7 @@ mod tests {
         let initial = scan();
         let mut facts = std::collections::BTreeMap::<String, usize>::new();
         for candidate in initial.index.cleanup_candidates() {
-            let outcome = platform_windows::cleanup::revalidate(&candidate);
+            let outcome = platform_windows::cleanup::revalidate(candidate);
             let key = format!(
                 "{}: {}",
                 candidate.category.as_deref().unwrap_or("unknown"),
@@ -1727,11 +2031,17 @@ mod tests {
             fs::write(&path, vec![0x5au8; 65536]).unwrap();
             paths.push((path, category));
         }
+        let _owned = OwnedFolders(
+            paths
+                .iter()
+                .map(|(path, _)| path.parent().unwrap().to_path_buf())
+                .collect(),
+        );
         let before = scan();
         let candidates = before
             .index
             .cleanup_candidates()
-            .into_iter()
+            .iter()
             .filter(|c| {
                 paths
                     .iter()
@@ -1767,7 +2077,7 @@ mod tests {
         let remaining = after
             .index
             .cleanup_candidates()
-            .into_iter()
+            .iter()
             .filter(|c| {
                 paths
                     .iter()
@@ -1779,9 +2089,193 @@ mod tests {
             remaining, 0,
             "deleted files must not reappear in full UI rescan"
         );
-        for (path, _) in paths {
-            fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "runs a real system scan and deletes only disposable category fixtures"]
+    fn other_cleanup_categories_delete_owned_files() {
+        struct OwnedFolders(Vec<std::path::PathBuf>);
+        impl Drop for OwnedFolders {
+            fn drop(&mut self) {
+                for folder in &self.0 {
+                    let _ = fs::remove_dir_all(folder);
+                }
+            }
         }
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let marker = format!("rusten-process-test-{suffix}");
+        let firefox_root = local.join("Mozilla/Firefox/Profiles").join(&marker);
+        let chrome_root = local.join("Google/Chrome/User Data").join(&marker);
+        let edge_root = local.join("Microsoft/Edge/User Data").join(&marker);
+        let documents = local.parent().unwrap().parent().unwrap().join("Documents");
+        let wechat_root = documents.join("WeChat Files").join(&marker);
+        let wechat_roaming_root = local
+            .parent()
+            .unwrap()
+            .join("Roaming/Tencent/WeChat")
+            .join(&marker);
+        let app_root = local.join("VLC/Cache").join(&marker);
+        let history_root = local.join("Microsoft/Windows/History").join(&marker);
+        let store_root = local.join("Packages").join(&marker);
+        let installers_root = local.join("Downloaded Installations").join(&marker);
+        let mut owned = vec![
+            firefox_root.clone(),
+            chrome_root.clone(),
+            edge_root.clone(),
+            wechat_root.clone(),
+            wechat_roaming_root.clone(),
+            app_root.clone(),
+            history_root.clone(),
+            store_root.clone(),
+            installers_root.clone(),
+        ];
+        let mut paths = vec![
+            (
+                firefox_root.join("cache2/disposable.bin"),
+                "browser.firefox",
+            ),
+            (chrome_root.join("Cache/disposable.bin"), "browser.chrome"),
+            (edge_root.join("Cache/disposable.bin"), "browser.edge"),
+            (wechat_root.join("Log/disposable.log"), "wechat.logs"),
+            (
+                wechat_roaming_root.join("Log/disposable.log"),
+                "wechat.logs",
+            ),
+            (
+                wechat_root.join("Cache/disposable.bin"),
+                "wechat.cache_backup",
+            ),
+            (
+                wechat_root.join("FileStorage/Image/disposable.bin"),
+                "wechat.chat_images",
+            ),
+            (
+                wechat_root.join("FileStorage/Video/disposable.bin"),
+                "wechat.chat_videos",
+            ),
+            (
+                wechat_root.join("FileStorage/General/disposable.bin"),
+                "wechat.moments",
+            ),
+            (
+                wechat_root.join("FileStorage/File/disposable.bin"),
+                "wechat.received_files",
+            ),
+            (app_root.join("disposable.bin"), "app.vlc"),
+            (history_root.join("disposable.txt"), "system.history"),
+            (store_root.join("LocalCache/disposable.bin"), "system.store"),
+            (installers_root.join("disposable.bin"), "system.installers"),
+        ];
+        for (relative, category) in [
+            ("Tencent/WeCom/Cache", "app.wecom"),
+            ("Tencent/QQ/Cache", "app.qq"),
+            ("Thunder Network/Thunder/Cache", "app.thunder"),
+            ("FileZilla/Cache", "app.filezilla"),
+            ("VMware/Cache", "app.vmware"),
+            ("DingTalk/Cache", "app.dingtalk"),
+            ("Tencent/Meeting/Cache", "app.tencent_meeting"),
+            ("Adobe/Acrobat/Cache", "app.adobe_reader"),
+            ("Microsoft/Office/Cache", "app.office"),
+            ("Sun/Java/Deployment/cache", "app.java"),
+            ("BaiduNetdisk/Cache", "app.baidu_netdisk"),
+            ("Oray/Sunlogin/Cache", "app.sunlogin"),
+            ("HiSuite/Cache", "app.hisuite"),
+        ] {
+            let root = local.join(relative).join(&marker);
+            paths.push((root.join("disposable.bin"), category));
+            owned.push(root);
+        }
+        let _owned = OwnedFolders(owned);
+        for (path, _) in &paths {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"owned cleanup verification fixture").unwrap();
+        }
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let report = super::scan_system_drive(Default::default(), sender).unwrap();
+        let mut candidates = report
+            .index
+            .cleanup_candidates()
+            .iter()
+            .filter(|candidate| {
+                paths.iter().any(|(path, _)| {
+                    candidate.path == normalize_path(&path.to_string_lossy()).unwrap()
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            candidates.len(),
+            paths.len(),
+            "full scan missed: {:?}",
+            paths
+                .iter()
+                .filter(|(path, _)| !candidates.iter().any(|candidate| {
+                    candidate.path == normalize_path(&path.to_string_lossy()).unwrap()
+                }))
+                .map(|(path, category)| {
+                    let normalized = normalize_path(&path.to_string_lossy()).unwrap();
+                    (
+                        path,
+                        category,
+                        report
+                            .index
+                            .iter_files()
+                            .any(|file| file.path() == &normalized),
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+        for (path, category) in &paths {
+            let normalized = normalize_path(&path.to_string_lossy()).unwrap();
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.path == normalized)
+                .unwrap();
+            assert_eq!(candidate.category.as_deref(), Some(*category), "{path:?}");
+        }
+        // These unique fixture profiles are not in use by the running apps.
+        for candidate in &mut candidates {
+            if candidate
+                .quick_clean_block_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("related process is running"))
+            {
+                candidate.quick_clean_block_reason = None;
+                candidate.quick_clean_eligible = true;
+            }
+        }
+        let plan = prepare_cleanup_plan_with_explicit(&candidates);
+        for (_, category) in &paths {
+            assert!(
+                plan.by_category.contains_key(*category),
+                "{category} missing from plan"
+            );
+        }
+        let result = super::execute_cleanup(&plan).unwrap();
+        assert_eq!(result.items.len(), paths.len());
+        assert!(
+            result
+                .items
+                .iter()
+                .all(|item| { item.result == application::CleanupItemResult::DeletedPermanently }),
+            "{result:?}"
+        );
+        assert!(paths.iter().all(|(path, _)| !path.exists()));
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let after = super::scan_system_drive(Default::default(), sender).unwrap();
+        assert!(
+            after.index.cleanup_candidates().iter().all(|candidate| {
+                !paths.iter().any(|(path, _)| {
+                    candidate.path == normalize_path(&path.to_string_lossy()).unwrap()
+                })
+            }),
+            "cleaned fixture files reappeared in the scan"
+        );
     }
 
     #[test]
@@ -1867,8 +2361,8 @@ pub fn explicit_file_candidate(file: &domain::FileRecord) -> CleanupCandidate {
         path: file.path().clone(),
         file_identity: Some(file.identity()),
         rule_id: None,
-        category: Some("大文件".into()),
-        reason: Some("用户明确选择的大文件".into()),
+        category: Some("手动选择".into()),
+        reason: Some("用户明确选择的文件".into()),
         estimated_size: Some(file.logical_size().max(file.allocated_size())),
         quick_clean_eligible: false,
         quick_clean_block_reason: Some("需要用户明确确认".into()),
@@ -1880,6 +2374,44 @@ pub fn explicit_file_candidate(file: &domain::FileRecord) -> CleanupCandidate {
         path_allowed: Some(true),
         file_identity_unchanged: Some(true),
         last_write_time: Some(file.facts().last_write_time),
+    }
+}
+
+pub(crate) fn classify_explicit_cleanup_items(plan: &mut CleanupPlan, index: &ScanIndex) {
+    let selected = plan
+        .items
+        .iter()
+        .filter(|item| item.candidate.rule_id.is_none())
+        .map(|item| item.candidate.path.display())
+        .collect::<std::collections::HashSet<_>>();
+    if selected.is_empty() {
+        return;
+    }
+    let Ok(rules) = RuleService::load_builtin() else {
+        return;
+    };
+    let stats = LiveCategoryStats::new(rules.rules());
+    let categories = index
+        .files_matching(|path| selected.contains(path))
+        .filter_map(|file| {
+            stats
+                .category_key_for_file(&file)
+                .map(|key| (file.path().clone(), key))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    for item in &mut plan.items {
+        if item.candidate.rule_id.is_none()
+            && let Some(category) = categories.get(&item.candidate.path)
+        {
+            item.candidate.category = Some(category.clone());
+        }
+    }
+    plan.by_category.clear();
+    for item in &plan.items {
+        *plan
+            .by_category
+            .entry(item.candidate.category.clone().unwrap_or_default())
+            .or_default() += item.estimated_bytes;
     }
 }
 
@@ -1911,6 +2443,7 @@ where
     execute_cleanup_with_cancellation(plan, &CancellationToken::default(), on_progress)
 }
 
+#[cfg(test)]
 pub fn execute_cleanup_with_cancellation<F>(
     plan: &CleanupPlan,
     cancel: &CancellationToken,
@@ -1923,21 +2456,22 @@ where
         .map(std::path::PathBuf::from)
         .ok_or_else(|| "LOCALAPPDATA is unavailable; operation log cannot be opened".to_owned())?;
     let data_root = root.join("Rusten");
-    fs::create_dir_all(data_root.join("backups")).map_err(|error| error.to_string())?;
+    execute_cleanup_with_cancellation_at(&data_root, plan, cancel, on_progress)
+}
+
+pub fn execute_cleanup_with_cancellation_at<F>(
+    data_root: &std::path::Path,
+    plan: &CleanupPlan,
+    cancel: &CancellationToken,
+    on_progress: F,
+) -> Result<CleanupResult, String>
+where
+    F: FnMut(CleanupProgress),
+{
+    fs::create_dir_all(data_root).map_err(|error| error.to_string())?;
     let log = OperationDb::open(data_root.join("operations.sqlite"))
         .map_err(|error| error.to_string())?;
-    let config = persistence::ConfigStore::read(&data_root.join("config.toml"))
-        .ok()
-        .map(|contents| application::ConfigService::load_toml(&contents).config)
-        .unwrap_or_default();
-    let catalog =
-        BackupCatalog::open(data_root.join("backups.jsonl")).map_err(|error| error.to_string())?;
     let actions = WindowsCleanupActions {
-        backup_root: data_root.join("backups"),
-        catalog,
-        backup_enabled: config.backup_enabled,
-        backup_quota_bytes: config.backup_quota_bytes,
-        last_backup_id: None,
         admin_client: platform_windows::admin_client::AdminClient::new(Duration::from_secs(10)),
         next_request_id: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1945,13 +2479,8 @@ where
             .unwrap_or(1)
             .max(1),
     };
-    Ok(
-        application::CleanupService::new(actions, log).execute_permanently_with_cancellation(
-            plan,
-            cancel,
-            on_progress,
-        ),
-    )
+    let service = application::CleanupService::new(actions, log);
+    Ok(service.execute_permanently_with_cancellation(plan, cancel, on_progress))
 }
 
 #[derive(Clone, Default)]
@@ -1992,11 +2521,6 @@ mod cleanup_progress_tests {
 }
 
 struct WindowsCleanupActions {
-    backup_root: PathBuf,
-    catalog: BackupCatalog,
-    backup_enabled: bool,
-    backup_quota_bytes: u64,
-    last_backup_id: Option<String>,
     admin_client: platform_windows::admin_client::AdminClient,
     next_request_id: u64,
 }
@@ -2170,76 +2694,8 @@ impl CleanupActions for WindowsCleanupActions {
     }
 
     fn backup_then_delete(&mut self, candidate: &CleanupCandidate) -> Result<u64, String> {
-        if !self.backup_enabled {
-            return Err("backup recovery is disabled in settings".to_owned());
-        }
-        let size = candidate.estimated_size.unwrap_or(0);
-        if !self.catalog.can_add(self.backup_quota_bytes, size) {
-            return Err("backup quota exceeded; existing recovery items were preserved".to_owned());
-        }
-        let identity = candidate
-            .file_identity
-            .ok_or_else(|| "file identity is unavailable".to_owned())?;
-        let id = self.catalog.next_recovery_id();
-        let destination = self
-            .backup_root
-            .join(format!("{}-{}.bak", identity.volume_serial, id.0));
-        if destination.exists() {
-            return Err("recovery backup destination already exists".to_owned());
-        }
-        let temporary = destination.with_extension("bak.pending");
-        fs::copy(candidate.path.extended(), &temporary)
-            .map_err(|error| format!("backup failed: {error}"))?;
-        if let Err(error) = fs::rename(&temporary, &destination) {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("backup commit failed: {error}"));
-        }
-        let backup_size = match fs::metadata(&destination) {
-            Ok(metadata) => metadata.len(),
-            Err(error) => {
-                let _ = fs::remove_file(&destination);
-                return Err(format!("backup metadata failed: {error}"));
-            }
-        };
-        if !self.catalog.can_add(self.backup_quota_bytes, backup_size) {
-            let _ = fs::remove_file(&destination);
-            return Err("backup quota exceeded; existing recovery items were preserved".to_owned());
-        }
-        let backup_path = match normalize_path(&destination.to_string_lossy()) {
-            Ok(path) => path,
-            Err(error) => {
-                let _ = fs::remove_file(&destination);
-                return Err(error.to_string());
-            }
-        };
-        if let Err(error) = self
-            .catalog
-            .record(RecoveryItem {
-                id,
-                original_path: candidate.path.clone(),
-                current_path: None,
-                file_identity: identity,
-                size: backup_size,
-                backup_path: Some(backup_path),
-                recoverable: true,
-                created_at: now_secs(),
-            })
-            .map_err(|error| format!("backup index failed: {error:?}"))
-        {
-            let _ = fs::remove_file(&destination);
-            return Err(error);
-        }
-        self.last_backup_id = Some(id.0.to_string());
-        if let Err(error) = fs::remove_file(candidate.path.extended()) {
-            return Err(format!(
-                "backup created and indexed but delete failed: {error}"
-            ));
-        }
-        Ok(size)
-    }
-
-    fn take_backup_id(&mut self) -> Option<String> {
-        self.last_backup_id.take()
+        let _ = candidate;
+        Err("文件恢复功能已移除".into())
     }
 }
 
@@ -2249,11 +2705,4 @@ fn requires_admin_cleanup(path: &domain::NormalizedPath) -> bool {
         && (value.get(3..).is_some_and(|relative| {
             relative.starts_with(r"windows\") || relative.starts_with(r"programdata\")
         }))
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

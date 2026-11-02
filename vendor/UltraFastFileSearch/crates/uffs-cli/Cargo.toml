@@ -1,0 +1,179 @@
+# ============================================================================
+# uffs-cli: Thin CLI Client
+# ============================================================================
+# Lightweight command-line client for UFFS.  All heavy lifting (MFT reading,
+# polars queries, index management) happens in the daemon (`uffsd`).
+# This crate depends only on `uffs-client` for IPC and formatting helpers.
+#
+# Usage:
+#   uffs "*.rs" --drive C
+#   uffs --stats
+#   uffs --daemon start
+# ============================================================================
+
+[package]
+name = "uffs-cli"
+description = "Thin command-line client for UFFS (Ultra Fast File Search)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Per-crate README override.  Inheriting `readme.workspace = true`
+# resolves to the workspace-root README via `../../README.md`, which
+# cargo flags with the "readme appears to be a path outside of the
+# package" warning even though the archived crate already contains a
+# copy.  Pointing at this crate's own `README.md` (alongside this
+# manifest) ships the right doc on the crates.io detail page and
+# silences the warning.  Permitted by uffs-manifest-audit invariant 3.5 via
+# `KnownExceptions::readme_override_ok` (see
+# `scripts/ci/uffs-manifest-audit/src/audit.rs`).  Issue #240.
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+
+# Phase R6→R8 deviation row 5 — polars-subtree publishability deferred.
+# This crate inherits polars transitively via
+# `uffs-client + uffs-format → uffs-mft → uffs-polars`; no direct
+# polars references in code.  `cargo package` resolves the full dep
+# tree, so this crate hard-fails until polars upstream publishes a
+# release with the nightly-API patches our git/rev pin carries.  Note:
+# end-user installation via `just use` (GitHub Releases tarball) is
+# unaffected — only `cargo install uffs-cli` is blocked, and that path
+# was never the recommended install method anyway.  See
+# `crates/uffs-polars/Cargo.toml` and the deviation log row 5 in
+# `docs/architecture/release-automation-plan.md`.
+publish.workspace = true
+
+# Phase R6 of `release-automation-plan.md` step 3 — docs.rs build config.
+# Multi-target build so platform-gated CLI subcommands render in docs.
+# See `uffs-time/Cargo.toml` for the rationale on `--cfg docsrs`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[[bin]]
+name = "uffs"
+path = "src/main.rs"
+
+[dependencies]
+# UFFS client library (IPC, protocol, format helpers).
+# `default-features = false` drops the async `UffsClient` + tokio
+# dependency (and therefore `ws2_32.dll`) from the CLI binary.  The CLI
+# uses only `connect_sync::UffsClientSync`.
+#
+# Not using `.workspace = true` here: workspace inheritance cannot
+# override `default-features`, so we point at the path directly.  The
+# version is pinned by the workspace via path dependency resolution.
+# The explicit `version = "…"` (kept in step with the workspace version
+# by the release bump) is required for `cargo package` validation — see
+# root `Cargo.toml`'s [workspace.dependencies] note for the full
+# rationale (R6 of `release-automation-plan.md`).
+uffs-client = { path = "../uffs-client", version = "0.6.41", default-features = false }
+
+# Canonical CSV / parity / legacy-footer writer.  Direct dep (not a
+# re-export chain through `uffs-client`) so the CLI and the daemon
+# hit the same `uffs_format::*` symbols without an indirection layer.
+# The explicit `version = "…"` (kept in step with the workspace version
+# by the release bump) is required for `cargo package` validation — see
+# root `Cargo.toml`'s [workspace.dependencies] note for the full
+# rationale (R6 of `release-automation-plan.md`).
+uffs-format = { path = "../uffs-format", version = "0.6.41" }
+
+# Typed drive-letter newtype.  Direct dep so the CLI command signatures
+# (`daemon_load`, `daemon_tiering`, etc.) name `DriveLetter` natively
+# rather than re-exporting through `uffs-client`.  Wire format is
+# unchanged — the (de)serialise impl emits a single ASCII char.
+uffs-mft.workspace = true
+
+# Shared operator-status styling (color, glyphs, aligned fields) for the
+# `--status` / `--daemon status` surfaces.  Zero-dep leaf crate; keeps the
+# one visual language in exactly one place.
+uffs-statusfmt.workspace = true
+
+# Shared per-platform native log-directory resolution — the resident
+# login item (`--daemon resident on`) must bake an ABSOLUTE --log-file
+# into the launchd plist / Run key / systemd unit (a login-started
+# daemon has no useful cwd).  Direct dep so the CLI resolves the same
+# path uffsd and uffsmcp use, instead of reinventing the logic.
+uffs-security.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Serialization
+serde_json.workspace = true
+
+# Locates executables on `PATH` (e.g. the daemon binary when auto-spawning).
+which.workspace = true
+
+# Nearest-command suggestion for a `--`-flag typo (`--updat` → `--update`).
+# Zero-dep, tiny; the CLI suggests over ITS command set only — the shared
+# `from_cli_args` parser (uffs-client) stays the single source of truth for
+# search-flag validation, so the daemon never learns CLI commands.
+strsim.workspace = true
+
+# Resolve the daemon lifecycle dir (`%LOCALAPPDATA%\uffs`) for self-update
+# detection — mirrors uffs-daemon so the PID-file path matches exactly.
+dirs-next.workspace = true
+
+# FILETIME arithmetic only — zero-dep crate extracted from uffs-mft so
+# the CLI does not transitively link polars, tokio/net, reqwest, or
+# object_store.  Use `uffs_time::{filetime_to_calendar,
+# filetime_with_tz_bias}` for timestamp formatting.
+uffs-time.workspace = true
+
+# Shared `--version` strings (short + long build fingerprint). Zero-dep leaf.
+uffs-version.workspace = true
+
+# Broker identity (`SERVICE_NAME` / `PIPE_NAME`) + native SCM status so
+# `uffs --status` can report the Access Broker. Both Layer-0 leaves:
+# broker-protocol is pure; uffs-winsvc stubs to "not installed" off Windows.
+uffs-broker-protocol.workspace = true
+uffs-winsvc.workspace = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Features (contract documented per playbook §988 — see
+# `crates/uffs-cli/src/main.rs` `# Features` rustdoc and
+# `docs/architecture/code-quality/dependency_policy.md`)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `mcp-http-probe` — **default-off**, **additive**.
+#
+#   * Enables `uffs --status` probing the MCP HTTP gateway's `/status`
+#     endpoint inside `commands::system_status`.
+#   * Adds no crate-graph deps; uses `std::net::TcpStream` (libstd).
+#   * Disabled by default because `std::net::TcpStream` is the sole
+#     reason `ws2_32.dll` would be linked on Windows, adding ~50 ms
+#     to cold-start launch.  Without the feature, `uffs --status` still
+#     reports the configured HTTP bind address — it just does not
+#     actively probe `/status`.
+#   * Semver: removing the probe behaviour or its observable output
+#     is breaking; adding richer probe output is not.
+[features]
+default = []
+mcp-http-probe = []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lints (inherit from workspace)
+# ─────────────────────────────────────────────────────────────────────────────
+[lints]
+workspace = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+# `winresource`: actively-maintained fork of `winres`.  Used in build.rs
+# to embed the UFFS icon (`assets/brand/icons/uffs.ico`) and the
+# `app.manifest` (asInvoker, PerMonitorV2 DPI, long-path aware) into
+# the `uffs.exe` PE binary on MSVC targets.  Inert on non-Windows.
+# Version is pinned at workspace scope — see root Cargo.toml.
+[build-dependencies]
+winresource.workspace = true
+# Stamps UFFS_GIT_SHA + build metadata for the version macros (build side only).
+uffs-version = { workspace = true, features = ["build"] }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+tempfile.workspace = true

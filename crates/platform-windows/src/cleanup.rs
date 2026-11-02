@@ -65,7 +65,7 @@ pub fn empty_recycle_bin() -> Result<u64, String> {
 }
 
 fn size_matches(estimated_size: u64, logical_size: u64, allocated_size: u64) -> bool {
-    estimated_size == logical_size.max(allocated_size)
+    estimated_size == logical_size || estimated_size == logical_size.max(allocated_size)
 }
 
 #[cfg(test)]
@@ -75,6 +75,11 @@ mod tests {
     #[test]
     fn accepts_logical_size_when_it_exceeds_allocation_size() {
         assert!(size_matches(4096, 4096, 1024));
+    }
+
+    #[test]
+    fn accepts_resident_file_size_when_metadata_allocation_is_larger() {
+        assert!(size_matches(34, 34, 4096));
     }
 
     #[test]

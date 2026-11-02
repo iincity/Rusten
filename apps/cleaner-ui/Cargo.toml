@@ -8,11 +8,17 @@ build = "build.rs"
 [dependencies]
 application.workspace = true
 domain.workspace = true
-gpui.workspace = true
-gpui-component.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
+nsh-platform-windows.workspace = true
+log.workspace = true
 platform-windows.workspace = true
 persistence = { path = "../../crates/persistence" }
 sha2.workspace = true
+
+[dev-dependencies]
+nsh-engine.workspace = true
+nsh-testing.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0.11"

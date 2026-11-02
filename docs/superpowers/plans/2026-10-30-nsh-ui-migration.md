@@ -1,5 +1,7 @@
 # NSH UI Migration Implementation Plan
 
+> 2026-11-02：下文保留历史执行方案。当前用户要求覆盖旧恢复、备份、二次确认及单一暗色约束，最终范围与验收见 [需求差距评审](../../testing/requirements-review-2026-11-02.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** Replace Rusten's complete GPUI interface with a native NSH Windows interface, including a Disktree-style Space Analysis view and verified real scan, cleanup, and recovery flows.
@@ -9,6 +11,23 @@
 **Tech Stack:** Rust 2024, NSH v0.3.0 (nsh-core, nsh-base, nsh-platform-windows, nsh-engine, nsh-testing), existing Rusten application/domain/platform/persistence crates, Windows Shell Recycle Bin APIs.
 
 **Spec:** docs/superpowers/specs/2026-10-30-nsh-ui-migration-design.md
+
+## Execution status — 2026-10-30
+
+The complete migration is integrated into the actual `F:\proj\Rusten`
+workspace. `cargo run --bin cleaner-ui` opens the six-page NSH application.
+Automated checks, native screenshots, isolated cleanup/restore, and window
+shutdown verification are recorded in
+[the acceptance record](../../testing/nsh-ui-acceptance.md).
+
+Tasks 1–8 are implemented: native bootstrap, bounded queries and geometry,
+controller, six pages, explorer interactions, production cutover, owned real
+filesystem workflows, and automated/native acceptance. NSH remains pinned to
+v0.3.0 with a local Windows-only keyboard, modal and shutdown patch.
+
+Original checkboxes below are the execution recipe, not claims of historical
+commits or every optional OS scenario. Source changes are uncommitted; consult
+the acceptance record for tested scenarios and remaining platform limits.
 
 ## Global Constraints
 

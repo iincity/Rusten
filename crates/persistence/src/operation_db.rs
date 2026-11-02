@@ -117,6 +117,44 @@ impl OperationDb {
 }
 
 impl OperationLog for OperationDb {
+    fn append_batch(&mut self, records: &[OperationRecord]) -> Result<(), AppError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| AppError::Log("operation database lock unavailable".into()))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| AppError::Log(error.to_string()))?;
+        {
+            let mut statement = transaction.prepare_cached(
+                "INSERT INTO operations(operation_id, rule_id, path, file_identity, backup_id, size, timestamp, result) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            ).map_err(|error| AppError::Log(error.to_string()))?;
+            for record in records {
+                let size = i64::try_from(record.size).map_err(|_| {
+                    AppError::Log("operation size exceeds SQLite integer range".into())
+                })?;
+                let timestamp = i64::try_from(record.timestamp).map_err(|_| {
+                    AppError::Log("operation timestamp exceeds SQLite integer range".into())
+                })?;
+                statement
+                    .execute(params![
+                        record.operation_id,
+                        record.rule_id,
+                        record.path,
+                        record.file_identity,
+                        record.backup_id,
+                        size,
+                        timestamp,
+                        record.result
+                    ])
+                    .map_err(|error| AppError::Log(error.to_string()))?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| AppError::Log(error.to_string()))
+    }
+
     fn append(&mut self, record: OperationRecord) -> Result<(), AppError> {
         let connection = self
             .connection
@@ -178,5 +216,35 @@ mod tests {
             .unwrap();
         assert_eq!(database.count().unwrap(), 1);
         assert!(path.is_file());
+    }
+
+    #[test]
+    fn batched_records_commit_together_and_roll_back_on_invalid_sizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("operations.sqlite");
+        let mut database = OperationDb::open(&path).unwrap();
+        let records = (0..65)
+            .map(|index| OperationRecord {
+                operation_id: format!("op-{index}"),
+                rule_id: None,
+                path: format!("C:\\Temp\\{index}.tmp"),
+                file_identity: format!("1:{index}"),
+                backup_id: None,
+                size: 1,
+                timestamp: 1,
+                result: "DeletedPermanently".into(),
+            })
+            .collect::<Vec<_>>();
+        database.append_batch(&records).unwrap();
+        drop(database);
+        let mut database = OperationDb::open(path).unwrap();
+        assert_eq!(database.count().unwrap(), 65);
+        let mut invalid = records;
+        for record in &mut invalid {
+            record.operation_id.push_str("-next");
+        }
+        invalid[64].size = u64::MAX;
+        assert!(database.append_batch(&invalid).is_err());
+        assert_eq!(database.count().unwrap(), 65);
     }
 }

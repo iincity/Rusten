@@ -5,6 +5,7 @@ pub mod disk;
 pub mod dism;
 pub mod filesystem;
 pub mod powershell;
+pub mod processes;
 pub mod recovery;
 pub mod services;
 pub mod shell;
@@ -17,3 +18,4 @@ pub use filesystem::{
     enumerate_statistics_files_for_patterns, is_hardlink_pair, lock_status, paths_equal_ordinal,
     read_metadata, reparse_point_kind, validate_physical_target,
 };
+pub use processes::running_process_names;

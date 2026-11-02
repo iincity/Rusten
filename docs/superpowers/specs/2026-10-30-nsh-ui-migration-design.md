@@ -1,5 +1,7 @@
 # Rusten NSH UI Migration Design
 
+> 2026-11-02 需求覆盖：当前采用原生 NSH，启动自动扫描；清理按钮直接执行选择，无二次确认、恢复页面或备份副本；提供默认淡绿及明亮/暗黑主题；根目录完整展示直接子目录。本文后续冲突内容仅作历史设计参考。当前契约与证据见 [需求差距评审](../../testing/requirements-review-2026-11-02.md)。
+
 Date: 2026-10-30
 Status: Approved design, pending implementation plan
 

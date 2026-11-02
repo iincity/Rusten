@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2025-2026 SKY, LLC.
+# SPDX-License-Identifier: MPL-2.0
+
+# uffs-update: self-update **acquire** helper binary.
+#
+# Deliberately a SEPARATE binary from `uffs` so the HTTP/TLS stack
+# (reqwest + rustls) never bloats the lean, fast-starting CLI. `uffs
+# update` spawns this only for the download/verify step; everything else
+# (detect, snapshot) stays in `uffs-cli`.
+
+[package]
+name = "uffs-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Internal tooling binary — not published to crates.io.
+publish.workspace = true
+
+[[bin]]
+name = "uffs-update"
+path = "src/main.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
+[dependencies]
+uffs-version.workspace = true
+# Shared hardened HTTP fetch + SHA-256 verify (extracted from this crate's
+# former `github.rs` / `verify.rs`). Carries the reqwest/rustls + sha2/hex
+# stack, so this crate no longer depends on them directly — and the
+# HTTP/TLS isolation from the lean `uffs` CLI is preserved unchanged.
+uffs-fetch.workspace = true
+anyhow.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+# Resolve the daemon lifecycle dir (`%LOCALAPPDATA%\uffs`) so quiesce can
+# poll the PID file as the "daemon stopped" signal — no process FFI.
+dirs-next.workspace = true
+# Broker identity (`SERVICE_NAME` / `PIPE_NAME`) for quiesce/restore — pure
+# cross-platform crate, so it lives here, not under cfg(windows).
+uffs-broker-protocol.workspace = true
+# Native Windows service control (quiesce stop / restore start) + the
+# broker-pipe readiness probe. Cross-platform (stubs off Windows), so the
+# quiesce/restore logic compiles everywhere without `sc.exe` text parsing.
+uffs-winsvc.workspace = true
+
+# Native owner-PID liveness for Phase H (no fragile `tasklist`/`kill`
+# shell-outs). Already in the lock → cargo-vet stays green.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Embed `app.manifest` (asInvoker) into uffs-update.exe on Windows MSVC so the
+# "update" name doesn't trip Installer Detection → forced UAC (os error 740).
+[build-dependencies]
+uffs-version = { workspace = true, features = ["build"] }
+winresource.workspace = true
+
+[lints]
+workspace = true

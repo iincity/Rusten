@@ -5,6 +5,5 @@ pub enum ViewId {
     SpaceAnalysis,
     LargeFiles,
     Cleanup,
-    Recovery,
     Settings,
 }
